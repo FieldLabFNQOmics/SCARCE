@@ -50,7 +50,6 @@ rsconnect/
 .Rproj.user
 .DS_Store
 SCARCE.Rproj
-inst/extdata/*
 package_setup.r
 docs
 inst/doc
