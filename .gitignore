@@ -47,3 +47,14 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+.Rproj.user
+.DS_Store
+SCARCE.Rproj
+inst/extdata/*
+package_setup.r
+docs
+inst/doc
+check_logs
+*.Rcheck/
+SCARCE_*.tar.gz
+inst/doc/

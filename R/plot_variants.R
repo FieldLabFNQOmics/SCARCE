@@ -1,0 +1,967 @@
+#' plot_variants.R
+#'
+#' Create variant visualisations from the outputs of `find_somatic_variants()`: a stacked bar chart of
+#' mutant proportions per cell type, an UpSet co-occurrence plot (if ≥4
+#' variants), per-variant UMAPs (NGT/AF/DP/GQ) over a Seurat embedding, and a
+#' Sankey showing hierarchical co-occurrence across cells.
+#'
+#' @param seurat_obj Optional Seurat object containing a UMAP reduction and
+#'   cell metadata. If supplied, per-variant genotype/AF/DP/GQ columns are added
+#'   to `meta.data` (temporarily inside the function) and UMAP panels are saved.
+#'   If `NULL`, UMAP plots are skipped.
+#' @param cell_annotations Named vector (length = number of cells) mapping barcode
+#'   (names) → cell-type (values). Required if seurat_obj not provided.
+#' @param focus_celltype String matching a celltype annotation. Top enriched variants
+#'    will be chosen based on results for this celltype only
+#' @param file_prefix Prefix used by `find_somatic_variants()`.
+#'   Used to locate `*_summary_pass*.tsv`, `*_genotypes.tsv`, and
+#'   `*_variant_counts_per_celltype.tsv` inside `result_dir`.
+#' @param input_files Optional vector of file paths if not searching with file_prefix. Must include `*_summary_pass*.tsv`, `*_genotypes.tsv`, and
+#'   `*_variant_counts_per_celltype.tsv`files.
+#' @param search Optional character vector of search terms/regex to select
+#'   variants of interest from the summary table. If `NULL`, the top `n_variants`
+#'   are chosen by `topn_col` after filtering.
+#' @param n_variants Maximum number of variants to plot.
+#' @param search_col Column name (in the summary TSV) to match `search` against
+#'   (regex). Common choices: `"plot_ID"`, `"variant"`, `"SYMBOL"`, etc.
+#' @param result_dir Directory containing the TSV outputs from
+#'   `find_somatic_variants()` (summary, per-cell-type, genotypes, counts).
+#' @param plot_directory Directory to write all figures (`*.png`, `*.html`).
+#' @param plot_prefix Filename prefix for saved plots.
+#' @param damaging Logical; when `TRUE`, keep only variants annotated as damaging
+#'   by SIFT/PolyPhen (strings containing `"Deleterious"` or `"damaging"`).
+#' @param priority_only Logical; when `TRUE`, keep only variants with the priority flag.
+#' @param pass_only Logical; when `TRUE`, keep only passing variants
+#' @param p_max Optional adjusted p-value (BH) cutoff applied to per-cell-type
+#'   enrichment results when selecting/signalling significant variants.
+#' @param z_min Optional minimum Z-score cutoff applied to per-cell-type
+#'   enrichment results when selecting/signalling significant variants.
+#' @param OR_min Optional minimum odds ratio cutoff applied to per-cell-type
+#'   enrichment results when selecting/signalling significant variants.
+#' @param min_varcount_total Minimum total mutant count (`NGT %in% {1,2}` across all
+#'   cells) required for a variant to be plotted.
+#' @param max_alt_portion_total Maximum allowed global mutant fraction
+#'   (`alt_cnt_total / data_cnt_total`) to keep (helps exclude ubiquitous/germline-like sites).
+#' @param topn_col Column used to rank variants. If NULL (default) the row order of the cell-type
+#'   results files is used. Use `"p"` (ascending) or `"OR"`/`"Z_score"` (descending).
+#' @param font_size_multiplyer Global multiplier for text sizes in UMAP panels;
+#'   useful when plotting many variants in grids.
+#' @param umap_reduction Which reduction to use when generating UMAP plots. Usually either
+#'   "umap" for ADT-base clusters (default) or "umap.variants" for variant-based clusters
+#' @param upset_n How many intersections should be displayed in Upset plot
+#' @param sankey_min_count Controls the minimum set size to be displayed on Sankey plot
+#' @param run_barplot Generate barplot (TRUE / FALSE)
+#' @param run_upset Generate Upset plot (TRUE / FALSE)
+#' @param run_heatmap Generate Heatmap (TRUE / FALSE)
+#' @param run_umap Generate UMAP plots (TRUE / FALSE)
+#' @param run_sankey Generate Sankey plots
+#' @param heatmap_anno Which feature should be used to annotate the heatmap. Either "padj" or "OR"
+#' @param include_UMAP_ref Include reference UMAP image in generate AF and NGT umaps? (TRUE / FALSE)
+#' @return Seurat object
+#' @export
+
+
+plot_variants <- function(
+    seurat_obj=NULL,
+    cell_annotations=NULL,
+    focus_celltype=NULL,
+    file_prefix=NULL,
+    input_files=NULL,
+    search=NULL,
+    n_variants=20,
+    search_col="plot_ID",
+    result_dir,
+    plot_directory,
+    plot_prefix,
+    # filters
+    damaging=T,
+    priority_only=T,
+    pass_only=T,
+    p_max=NULL,
+    z_min=NULL,
+    OR_min=NULL,
+    min_varcount_total  = 20,
+    max_alt_portion_total = 0.5,
+    topn_col=NULL,
+    font_size_multiplyer=1,
+    umap_reduction="umap",
+    upset_n=10,
+    sankey_min_count=10,
+    run_barplot=T,
+    run_upset=T,
+    run_heatmap=T,
+    run_umap=T,
+    run_sankey=T,
+    heatmap_anno="padj",
+    include_UMAP_ref=T
+){
+  .is_mutated <- function(s) {
+    components <- unlist(str_split(s, ";"))
+    NGT <- components[which(genotype_format_fields=="NGT")]
+    return(suppressWarnings(as.numeric(NGT)) %in% c(1,2))
+  }
+  .pull_AF <- function(s){
+    components <- unlist(str_split(s, ";"))
+    AF <- components[which(genotype_format_fields=="AF")]
+    return(AF)
+  }
+  
+  
+  if(is.null(seurat_obj) & is.null(cell_annotations)){
+    message("Need either seurat_obj or cell_annotations for heatmap. This will be skipped")
+  }else{
+    if(is.null(cell_annotations)){
+      cell_annotations <- Idents(seurat_obj)
+    }
+  }
+  
+  #########
+  # Files #
+  #########
+  
+  if(!is.null(input_files)){
+    all_files <- input_files
+  }else{
+    all_files <- list.files(result_dir, pattern = file_prefix)
+  }
+  
+  variant_counts_file <- all_files[grep("_variant_counts_per_celltype.tsv", all_files)]
+  genotype_file <- all_files[grep("_genotypes.tsv", all_files)]
+  
+  if(length(variant_counts_file) > 1 | length(genotype_file) > 1){
+    stop("Multiple variant count or genotype files detected. Try using input_files instead of file_prefix")
+  }
+  
+  variant_counts_cols <- .get_col_schema(file.path(result_dir,variant_counts_file), 1000)
+  genotype_fmt_line <- readLines(file.path(result_dir,genotype_file), n = 1L)
+  genotype_format_fields <- strsplit(gsub("^#FORMAT=", "", genotype_fmt_line), ";", fixed = TRUE)[[1]]
+  genotype_cols <- .get_col_schema(file.path(result_dir,genotype_file), 1000)
+  
+  cell_type_files <- all_files[!grepl("summary|vep|genotypes|variant_counts_per_celltype",all_files)]
+  cell_type_files <- cell_type_files[grep(".tsv$",cell_type_files)]
+  
+  #if(priority_only){
+  #  summary_file <- all_files[grep("_summary_pass_only_priority.tsv", all_files)]
+  #  cell_type_files <- cell_type_files[grep("pass_only_priority.tsv", cell_type_files)]
+  #}else{
+  #  summary_file <- all_files[grep("_summary_pass_only.tsv", all_files)]
+  #  cell_type_files <- cell_type_files[grep("pass_only.tsv$", cell_type_files)]
+  #}
+  summary_file <- all_files[grep("_summary.tsv", all_files)]
+  cell_type_files <- cell_type_files[!grepl("pass_only|priority", cell_type_files)]
+  
+  summary_cols <- .get_col_schema(file.path(result_dir,summary_file), 1000)
+  
+  cell_type_cols <- .get_col_schema(file.path(result_dir,cell_type_files[1]),1000)
+  
+  cell_types <- str_extract(cell_type_files, pattern = paste0("^",file_prefix,"_(.*).*.tsv"), group = 1)
+  names(cell_type_files) <- cell_types
+  barcodes <- .detect_barcodes(file.path(result_dir,genotype_file))
+  
+  ########################
+  # Variants of Interest #
+  ########################
+  
+  # If not searching, just take top n results #
+  
+  if(is.null(search)){
+    
+    if(!is.null(focus_celltype)){
+      search_files <- paste0(file_prefix,"_",focus_celltype,".tsv")
+    }else{
+      search_files <- cell_type_files
+    }
+    variant_rows <- foreach(file=file.path(result_dir,search_files), .combine = "bind_rows") %do%{
+      c <- str_extract(file, pattern = paste0(file_prefix,"_(.*).*.tsv"), group = 1)
+      v <- fread(file, col.names  = names(cell_type_cols), colClasses = unname(cell_type_cols)) %>%
+        mutate(cell_type=c)
+      
+      if (pass_only) v <- filter(v, filter==".")
+      if (priority_only) v <- filter(v, priority_flag%in%c(1,"1"))
+      
+      if (!is.null(p_max)) v <- filter(v, padj < p_max)
+      if (!is.null(z_min)) v <- filter(v, Z_score > z_min)
+      if (!is.null(OR_min)) v <- filter(v, OR > OR_min)
+      if (isTRUE(damaging)) v <- filter(v, str_detect(SIFT,"deleterious") | str_detect(PolyPhen,"damaging") )
+      v
+    }
+  
+    variant_rows <- variant_rows %>%
+      # apply filters
+      filter(alt_cnt_total >= min_varcount_total) %>%
+      filter(alt_proportion_total <= max_alt_portion_total)
+    
+    if(is.null(topn_col)){
+      variant_rows <- variant_rows %>%
+        head(n_variants)
+    }else if(topn_col %in% c("OR","Z_score")){
+      variant_rows <- variant_rows %>%
+        arrange(desc(abs(!!sym(topn_col)))) %>%
+        head(n_variants)
+    }else if(topn_col %in% c("p")){
+      variant_rows <- variant_rows %>%
+        arrange(padj,p,abs(Z_score)) %>%
+        head(n_variants)
+    }
+    
+    
+    variants <- variant_rows %>% dplyr::select(variant,plot_ID) %>% unique() %>% deframe()
+    message(paste0("Search returned ", length(variants), " variants"))
+    
+  }else{
+    
+    if(!is.null(focus_celltype)){
+      search_files <- paste0(file_prefix,"_",focus_celltype,".tsv")
+    }else{
+      search_files <- cell_type_files
+    }
+    
+    
+    variant_rows <- foreach(file=file.path(result_dir,search_files), .combine = "bind_rows") %do%{
+      c <- str_extract(file, pattern = paste0(file_prefix,"_(.*).*.tsv"), group = 1)
+      v <- fread(file, col.names  = names(cell_type_cols), colClasses = unname(cell_type_cols)) %>%
+        mutate(cell_type=c) %>%
+        filter(str_detect(.data[[search_col]], paste(search, collapse = "|")))
+      
+      if (pass_only) v <- filter(v, filter==".")
+      if (priority_only) v <- filter(v, priority_flag%in%c(1,"1"))
+      
+      if (!is.null(p_max)) v <- filter(v, padj < p_max)
+      if (!is.null(z_min)) v <- filter(v, Z_score > z_min)
+      if (!is.null(OR_min)) v <- filter(v, OR > OR_min)
+      if (isTRUE(damaging)) v <- filter(v, str_detect(SIFT,"deleterious") | str_detect(PolyPhen,"damaging") )
+      v
+    }
+    
+    variant_rows <- variant_rows %>%
+      # apply filters
+      filter(alt_cnt_total >= min_varcount_total) %>%
+      filter(alt_proportion_total <= max_alt_portion_total)
+    
+    if(is.null(topn_col)){
+      variant_rows <- variant_rows %>%
+        head(n_variants)
+    }else if(topn_col %in% c("OR","Z_score")){
+      variant_rows <- variant_rows %>%
+        arrange(desc(abs(!!sym(topn_col)))) %>%
+        head(n_variants)
+    }else if(topn_col %in% c("p")){
+      variant_rows <- variant_rows %>%
+        arrange(padj,p,abs(Z_score)) %>%
+        head(n_variants)
+    }
+    
+    
+    if(nrow(variant_rows)==0){
+      stop("ERROR: Search and filters returned no variants")
+    }else{
+      message(paste0("Remaning after filters: \n", paste(unique(variant_rows %>% pull(search_col)), collapse = "\n")))
+    }
+    
+    variants <- variant_rows %>% dplyr::select(variant,plot_ID) %>% unique() %>% deframe()
+    
+    message(paste0("Search returned ", length(variants), " variants"))
+    
+    if(length(variants)>n_variants){
+      stop("ERROR: Search returned too many variants. Use stricter settings or increase n_variants")
+    }
+  }
+  
+  ################################
+  # Variant Counts Per Cell Type #
+  ################################
+  
+  if(run_barplot){
+  
+    message("Retrieving variant counts per cell-type")
+    
+    variant_counts <- foreach(variant=variants, .combine = "bind_rows") %do% {
+      suppressWarnings(variant_row <- data.table::fread(
+        cmd = sprintf("grep -Fw '%s' '%s'", variant, file.path(result_dir,variant_counts_file)),
+        sep = "\t",
+        #header=F,
+        col.names  = names(variant_counts_cols), colClasses = unname(variant_counts_cols)
+      ) %>% 
+        as.data.frame())
+    } %>%
+      # deal with special case duplicate plot_IDs
+      #mutate(plot_ID=ifelse(plot_ID %in% plot_ID[which(duplicated(plot_ID))], paste0(plot_ID,"(",variant,")"), plot_ID)) %>%
+      dplyr::select(`variant`,plot_ID, ends_with("count")) %>%
+      pivot_longer(-c(`variant`,plot_ID),names_to="col", values_to="count") %>%
+      mutate(cell_type=gsub("_alt_count|_data_count","",col),
+             feature=ifelse(str_detect(col,"alt"),"alt_count","data_count")
+      )%>%
+      dplyr::select(`variant`,plot_ID,cell_type,feature,count) %>%
+      pivot_wider(names_from=feature, values_from=count) %>%
+      arrange(variant) %>%
+      mutate(plot_ID=URLdecode(plot_ID)) %>%
+      mutate(plot_ID=factor(plot_ID, levels=unique(plot_ID)),
+             alt_frequency=ifelse(data_count>0,alt_count/data_count,0))
+    
+    
+    suppressWarnings(rm(sig_anno))
+    for(file in cell_type_files){
+      ct <- names(cell_type_files[which(cell_type_files==file)])
+      anno <- fread(file.path(result_dir,file), select = c("plot_ID","padj","OR")) %>%
+        mutate(padj=ifelse(OR<1,NA,padj)) %>%
+        dplyr::select(plot_ID,padj) %>%
+        dplyr::filter(plot_ID %in% variants) %>%
+        mutate(plot_ID=URLdecode(plot_ID))
+      
+      padjs_out <- rep(1, length(variants))
+      names(padjs_out) <- URLdecode(variants)
+      
+      if(nrow(anno)>0){
+        padjs <- deframe(anno)
+        padjs_out[names(padjs)] <- padjs
+      }
+      anno_out <- data.frame(padjs_out)
+      colnames(anno_out) <- "padj"
+      anno_out <- anno_out %>%
+        rownames_to_column("plot_ID") %>%
+        mutate(sig=ifelse(is.na(padj)|padj>=0.05,"",
+                          ifelse(padj>=0.01,"*",
+                                 ifelse(padj>=0.001,"**","***"))),
+               cell_type=ct)
+      if(exists("sig_anno")){
+        sig_anno <- rbind(sig_anno,anno_out)
+      }else{
+        sig_anno <- anno_out
+      }
+    }
+    
+    bar_data <- variant_counts %>%
+      left_join(sig_anno %>% dplyr::select(plot_ID,cell_type,sig), by = c("plot_ID","cell_type")) %>%
+      mutate(plot_ID = factor(plot_ID, levels = URLdecode(unname(variants))))
+    
+    p <- ggplot(bar_data, aes(x=plot_ID, fill=cell_type, y=alt_frequency, label=sig)) +
+      geom_bar(stat = "identity", position = "stack") +
+      geom_text(position=position_stack(vjust = 0.5)) +
+      labs(x="Variant ID", y="Mutant Allele Proportion") +
+      guides(fill=guide_legend(title="Cell Type")) +
+      theme_bw() +
+      theme(axis.text.x = element_text(angle=90, hjust=1))
+    
+    plot_width= length(variants)+5
+    
+    ggsave(plot = p,file.path(plot_directory,paste0(plot_prefix,"_barplot.png")), width = plot_width, units = "cm")
+    
+    message(paste0("Saved plot showing variant count per cell-type to ", file.path(plot_directory,paste0(plot_prefix,"_barplot.png"))))
+  
+  }
+  ##############
+  # Upset Plot #
+  ##############
+  
+  if(run_upset){
+  
+    if(length(variants) <= 3){
+      message("Skipping Upset plot due to too few variants returned")
+    }else{
+      
+      upset_data <- foreach(v=names(variants)) %do% {
+        variant_row <- data.table::fread(
+          cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+          sep = "\t",
+          col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
+        ) %>% 
+          as.data.frame() %>%
+          filter(variant==v)
+        variant_row <- variant_row[barcodes]
+        mutated <- vapply(variant_row, .is_mutated, logical(1))
+        names(which(mutated))
+        
+      }
+      names(upset_data) <- URLdecode(variants)
+      
+      bc <- sort(unique(unlist(upset_data)))
+      upset_data <- as.data.frame(bind_cols(lapply(upset_data, function(v) bc %in% v)))
+      rownames(upset_data) <- bc
+      
+      sets <- colnames(upset_data)
+      
+      upset_data[sets] <- lapply(upset_data[sets], function(x) as.logical(as.integer(x)))
+      
+      p <- upset(
+        n_intersections=upset_n,
+        upset_data,
+        intersect = colnames(upset_data),
+        base_annotations = list(
+          "Intersection size" = ComplexUpset::intersection_size(
+            text = list(vjust = -0.5),
+            text_colors = c(on_background = "black", on_bar = "black")
+          )
+        ),
+        set_sizes = ComplexUpset::upset_set_size()
+      )
+      
+      ggsave(file.path(plot_directory, paste0(plot_prefix, "_upset.png")),
+             p, width = 20, height = 20, units = "cm", dpi = 300, bg = "white")
+      
+      
+      #png(filename=file.path(plot_directory,paste0(plot_prefix,"_upset.png")),res = 300, width = 20, height = 20, units = "cm", type = "cairo")
+      #on.exit(grDevices::dev.off(), add = TRUE)
+      #grid::grid.newpage()
+      #UpSetR::upset(UpSetR::fromList(upset_data), order.by = "freq",nsets = length(variants))
+      #dev.off()
+      message(paste0("Saved variant upset plot to "), file.path(plot_directory,paste0(plot_prefix,"_upset.png")))
+    }
+  } 
+  ##############
+  # AF Heatmap #
+  ##############
+  
+  if(run_heatmap){
+    
+    HM_data <- foreach(v=names(variants), .combine = "bind_rows") %do% {
+      variant_row <- data.table::fread(
+        cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+        sep = "\t",
+        col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
+      ) %>% 
+        as.data.frame() %>%
+        filter(variant==v)
+      variant_row <- as.matrix(variant_row[barcodes])
+      AF <- apply(variant_row, 2, .pull_AF) %>% as.numeric()
+      as.data.frame(matrix(AF, nrow = 1))
+    }
+    dimnames(HM_data) <- list(URLdecode(variants), barcodes)
+    
+    HM_data <- t(HM_data) %>% as.data.frame()
+    
+    HM_cell_order <- as.data.frame(cell_annotations)
+    colnames(HM_cell_order) <- "cell_type"
+    
+    anno_df<-NULL
+    for(file in cell_type_files){
+      ct <- names(cell_type_files[which(cell_type_files==file)])
+      anno <- fread(file.path(result_dir,file), select = c("plot_ID",heatmap_anno)) %>%
+        dplyr::filter(plot_ID %in% variants) %>%
+        mutate(plot_ID=URLdecode(plot_ID))
+      
+      anno_vals_out <- rep(1, length(variants))
+      names(anno_vals_out) <- URLdecode(variants)
+      
+      if(nrow(anno)>0){
+        anno_vals <- deframe(anno)
+        anno_vals_out[names(anno_vals)] <- anno_vals
+      }
+      anno_out <- data.frame(anno_vals_out)
+      colnames(anno_out) <- ct
+      if(!is.null(anno_df)){
+        anno_df <- cbind(anno_df,anno_out)
+      }else{
+        anno_df <- anno_out
+      }
+    }
+    
+    # get within-cell-type clusters
+    new_order <- integer(0)
+    for (ct in unique(cell_annotations)) {
+      idx <- which(HM_cell_order$cell_type == ct)
+      if (length(idx) > 2 && ncol(HM_data) > 1) {
+        subHM_data <- HM_data[idx, , drop = FALSE]
+        subHM_data <- as.matrix(subHM_data)
+        ok_row <- rowSums(is.finite(subHM_data)) >= 2
+        
+        col_full <- if (any(ok_row)) colSums(is.finite(subHM_data[ok_row, , drop = FALSE])) == sum(ok_row) else rep(FALSE, ncol(subHM_data))
+        M <- subHM_data[ok_row, col_full, drop = FALSE]
+        
+        if (sum(ok_row) >= 2 && ncol(M) >= 1) {
+          ord_good <- hclust(dist(M))$order
+          ord_idx  <- c(which(ok_row)[ord_good], which(!ok_row))  # sparse/all-NA rows at end
+        } else {
+          ord_idx <- seq_len(nrow(subHM_data))  # not enough data to cluster
+        }
+        
+        ord <- idx[ord_idx]
+        
+      } else {
+        ord <- idx
+      }
+      new_order <- c(new_order, ord)
+    }
+    
+    HM_data <- HM_data[new_order, , drop = FALSE]
+    HM_cell_order <- HM_cell_order[new_order, , drop = FALSE]
+    
+    # color maps
+    af_pal   <- colorRampPalette(c("#6baed6","#EDE953","#E03512"))(101)
+    #p_colfun <- colorRamp2(c(0, 0.05, 1), c("#66a61e", "white", "#E03512"))
+    p_colfun <- colorRamp2(
+      c(0, 1, -log10(0.05), 3),
+      c("#E03512", "#EDE953", "white", "#66a61e")
+    )
+    OR_colfun <- colorRamp2(
+      c(0, 1, 10),
+      c("#E03512", "white", "#66a61e")
+    )
+    
+    # consistent cell-type colours
+    cts <- unique(HM_cell_order$cell_type)
+    ct_cols <- setNames(colorRampPalette(
+      c("#1b9e77","#d95f02","#7570b3","#e7298a",
+        "#66a61e","#e6ab02","#a6761d","#666666"))(length(cts)), cts)
+    
+    # left cell-type bar
+    left_anno <- rowAnnotation(
+      `Cell type` = HM_cell_order$cell_type,
+      col   = list(`Cell type` = ct_cols),
+      width = unit(4, "mm"),
+      annotation_name_side = "top",
+      annotation_name_rot  = 0,    # label horizontally above bar 
+      show_annotation_name = FALSE
+    )
+    
+    # reorder padj_df columns to match top-to-bottom order of cell types
+    anno_df <- anno_df[, levels(factor(HM_cell_order$cell_type, levels = unique(HM_cell_order$cell_type))), drop = FALSE]
+    
+    # build per-cell-type strips (no legends)
+    annos_list <- setNames(lapply(colnames(anno_df), function(ct) {
+      vals <- pmax(anno_df[[ct]], 1e-6)         # avoid log10(0)
+      if(heatmap_anno=="padj"){
+        anno_simple(x=-log10(vals), col = p_colfun)
+      }else{
+        anno_simple(x=vals, col = OR_colfun)
+      }
+    }), colnames(anno_df))
+    
+    top_anno <- do.call(HeatmapAnnotation, c(
+      annos_list,
+      list(
+        annotation_name_side = "left",   
+        annotation_name_rot  = 0,         # horizontal
+        show_legend = FALSE
+      )
+    ))
+    
+    # main heatmap
+    ht <- Heatmap(as.matrix(HM_data),
+                  na_col = "#6E6E6E",
+                  name = "AF",
+                  col = af_pal,
+                  cluster_rows = FALSE,
+                  cluster_columns = FALSE,
+                  show_row_names = FALSE,
+                  show_column_names = TRUE,
+                  row_order = new_order,
+                  row_split = HM_cell_order$cell_type,
+                  top_annotation = top_anno,
+                  left_annotation = left_anno,
+                  heatmap_legend_param = list(at = c(0,.25,.5,.75,1)))
+    
+    # single shared padj legend
+    p_legend <- Legend(
+      title = if(heatmap_anno=="padj") "Adjusted p-value" else "Odds Ratio",
+      col_fun = if(heatmap_anno=="padj") p_colfun else OR_colfun,
+      at = if(heatmap_anno=="padj") c(0, 1, -log10(0.05), 3) else c(0, 1, 10),
+      labels = if(heatmap_anno=="padj") c("1", "0.1", "0.05", "0.001") else  c("0", "1", "10"),
+      direction = "horizontal"
+    )
+    
+    plot_width <- 200*length(variants)+200
+    
+    # save
+    png(file.path(plot_directory,paste0(plot_prefix,"_AF_heatmap.png")),
+        width = plot_width, height = 3000, res = 300)
+    
+    draw(ht,
+         heatmap_legend_side = "right",
+         annotation_legend_side = "top",
+         annotation_legend_list = list(p_legend))
+    dev.off()
+    
+    message(paste0("Saved allele frequency heatmap to ", file.path(plot_directory,paste0(plot_prefix,"_AF_heatmap.png"))))
+  
+  }
+  
+  ##############
+  # UMAP Plots #
+  ##############
+  
+  if(run_umap){
+    
+    font_scale <- seq(from=2,to=1,length.out=20)
+    panel_multiplyer <- font_scale[length(variants)]
+    
+    umap_plot_title_size=5*font_size_multiplyer*panel_multiplyer
+    umap_legend_title_size=8*font_size_multiplyer*panel_multiplyer
+    umap_legend_label_size=8*font_size_multiplyer*panel_multiplyer
+    umap_axis_title_size=5*font_size_multiplyer*panel_multiplyer
+    umap_axis_lables_size=4*font_size_multiplyer*panel_multiplyer
+    #umap_ref_title_size=8*font_size_multiplyer
+    umap_ref_label_size=4*font_size_multiplyer
+    umap_ref_axis_title_size=10*font_size_multiplyer
+    umap_ref_axis_lables_size=8*font_size_multiplyer
+    
+    
+    if(is.null(seurat_obj)){
+      paste0("Skipping UMAP plots because no seurat object supplied")
+    }else{
+      umap_plots <- foreach(v=names(variants)) %do% {
+        
+        seurat_anno_data <- data.table::fread(
+          cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+          sep = "\t",
+          col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
+        ) %>% 
+          as.data.frame() %>%
+          filter(variant==v)
+        seurat_anno_data <- seurat_anno_data[c("plot_ID",barcodes)] %>%
+          column_to_rownames("plot_ID") %>%
+          t() %>%
+          as.data.frame() %>%
+          rownames_to_column("barcode") %>%
+          deframe()
+        
+        seurat_anno_data <- data.table::transpose(as.data.frame(strsplit(seurat_anno_data, ";", fixed = T)),keep.names = "barcode")
+        colnames(seurat_anno_data) <- c("barcode", genotype_format_fields)
+        seurat_anno_data <- suppressWarnings(seurat_anno_data %>%
+          mutate(across(-barcode,as.numeric)))
+        
+        
+        # Prepare safe column name suffix based on variant (for uniqueness)
+        safe_var <- gsub("[^A-Za-z0-9_]+", "_", v)
+        
+        seurat_cells <- colnames(seurat_obj)
+        
+        add_col <- function(seurat_obj, vec, base_name) {
+          colname <- paste0(base_name, "_", safe_var)
+          tmp <- rep(NA, length(seurat_cells))
+          names(tmp) <- seurat_cells
+          # subset on intersection
+          keep <- intersect(seurat_cells, seurat_anno_data$barcode)
+          if (length(keep)) {
+            m <- match(keep, seurat_anno_data$barcode)
+            tmp[keep] <- vec[m]
+          }
+          seurat_obj[[colname]] <- tmp
+          return(seurat_obj)
+        }
+        
+        for(value in genotype_format_fields){
+          seurat_obj <- add_col(seurat_obj,as.vector(seurat_anno_data[[value]]), value)
+        }
+        
+        plot_features <- colnames(seurat_obj@meta.data)[which(str_detect(colnames(seurat_obj@meta.data), safe_var))]
+        
+        plots <- foreach(feature=plot_features) %do% {
+          type <- str_extract(feature, "^([^_]+)_", group = 1)
+          if (type=="NGT") {
+            
+            seurat_obj[[feature]] <- factor(
+              as.vector(seurat_obj[[feature]])[[1]],
+              levels = c(3,0,1,2),
+              labels = c("Unavailable","WT","HET","HOM")
+            )
+            p <- DimPlot(
+              seurat_obj, reduction = umap_reduction, group.by = feature,
+              pt.size   = 0.8, alpha = 0.9
+            ) + ggplot2::ggtitle(paste0(v)) +
+              scale_color_manual(
+                name   = "NGT",
+                values = c(WT="#6baed6", HET="#EDE953", HOM="#E03512", Unavailable="darkgrey"),
+                limits = c("WT","HET","HOM","Unavailable"),
+                drop   = FALSE
+              ) +
+              theme(plot.title = element_text(size = umap_plot_title_size),
+                    legend.title = element_text(size = umap_legend_title_size),
+                    legend.text = element_text(size=umap_legend_label_size),
+                    axis.title = element_text(size = umap_axis_title_size),
+                    axis.text = element_text(size = umap_axis_lables_size)
+              ) +
+              guides(fill="none")
+            
+            # dealing with issue generating multiple legends
+            if(v!=names(variants)[1]){
+              p <- p + guides(colour="none")
+            }
+            
+          }else{
+            p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
+              ggplot2::ggtitle(paste0(type,": ", v)) +
+              scale_colour_gradient2("AF", 
+                                     limits = c(0,1), 
+                                     breaks = c(0,0.5,1), 
+                                     low = "#6baed6", mid= "#EDE953",high = "#E03512",
+                                     midpoint = 0.5,
+                                     oob = scales::squish, na.value = "darkgrey") +
+              theme(plot.title = element_text(size = umap_plot_title_size),
+                    legend.title = element_text(size = umap_legend_title_size),
+                    legend.text = element_text(size=umap_legend_label_size),
+                    axis.title = element_text(size = umap_axis_title_size),
+                    axis.text = element_text(size = umap_axis_lables_size)
+                    )
+              )
+          }
+          p
+          
+        }
+        
+        names(plots) <- str_extract(plot_features, "^([^_]+)_", group = 1)
+        
+        plots
+        
+      }
+      
+      names(umap_plots) <- URLdecode(variants)
+      
+      annotated_umap <- DimPlot(seurat_obj,
+                                reduction = umap_reduction,
+                                #group.by  = "final_annotation",
+                                label     = TRUE,
+                                repel     = TRUE, label.box = T, pt.size=1.5, label.size = umap_ref_label_size
+      ) +
+        ggtitle("") +
+        theme(axis.title = element_text(size=umap_ref_axis_title_size),
+              axis.text = element_text(size = umap_ref_axis_lables_size)) 
+  
+      plot_height = ceiling((length(variants)/3))*10
+      
+      NGT_plots <- .assemble_feature_grid(variant_plot_list=umap_plots, feature = "NGT", 
+                                          reference_umap=if(include_UMAP_ref) annotated_umap else NULL, 
+                                          ncol = if(length(variants) < 3) length(variants) else 3)
+      
+      ggsave(plot = NGT_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_NGT.png")),  width = 40, height = plot_height, units = "cm")
+      message(paste0("Saved genotype UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_NGT.png")))
+      
+      AF_plots <- .assemble_feature_grid(variant_plot_list=umap_plots, feature = "AF", 
+                                         reference_umap=if(include_UMAP_ref) annotated_umap else NULL, 
+                                         ncol = if(length(variants) < 3) length(variants) else 3)
+      ggsave(plot = AF_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_AF.png")),  width = 40, height = plot_height, units = "cm")
+      message(paste0("Saved allele-frequency UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_AF.png")))
+    }
+  }
+  ###############
+  # Sankey Plot #
+  ###############
+  
+  if(run_sankey){
+    
+    mut_matrix <- foreach(v=names(variants), .combine="bind_rows") %do% {
+      variant_row <- data.table::fread(
+        cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+        sep = "\t",
+        col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
+      ) %>% 
+        as.data.frame() %>%
+        filter(variant==v)
+      variant_row <- variant_row[barcodes]
+      vapply(variant_row, .is_mutated, logical(1))
+    } %>%
+      as.matrix()
+    
+    rownames(mut_matrix) <- URLdecode(variants)
+    
+    sk <- .make_sankey(min_count = sankey_min_count,
+      mut_matrix,
+      add_terminals = TRUE,
+      terminal_label = "",
+      omit_full_terminal = TRUE   # <— hides redundant 100% terminals
+    )
+    
+    p <- sankeyNetwork(
+      Links = sk$links, Nodes = sk$nodes,
+      Source = "source", Target = "target", Value = "value",
+      NodeID = "label", fontSize = 12, nodeWidth = 24, sinksRight = FALSE,height = 400, width=2000, fontFamily = "sans-serif"
+    )
+    
+    
+    htmlwidgets::saveWidget(p, file = file.path(plot_directory,paste0(plot_prefix,"_sankey.html")))
+    message(paste0("Saved Sankey plot to "), file.path(plot_directory,paste0(plot_prefix,"_sankey.html")))
+  }
+}
+
+
+.assemble_feature_grid <- function(variant_plot_list,
+                                  feature = c("NGT","AF","DP","GQ"),
+                                  reference_umap=NULL,
+                                  ncol = 4,
+                                  title = NULL,
+                                  collect_legend = TRUE,
+                                  add_titles = TRUE,
+                                  variant_order = NULL) {
+  
+  feature <- as.character(feature)
+  
+  # variant names for panel titles
+  vnames <- names(variant_plot_list) %||% paste0("Variant_", seq_along(variant_plot_list))
+  
+  # optional ordering
+  if (!is.null(variant_order)) {
+    keep <- vnames %in% variant_order
+    variant_plot_list <- variant_plot_list[keep]
+    vnames <- vnames[keep]
+    ord <- match(variant_order, vnames)
+    variant_plot_list <- variant_plot_list[ord[!is.na(ord)]]
+    vnames <- vnames[ord[!is.na(ord)]]
+  }
+  
+  # extract the chosen feature plot from each variant
+  plots <- Map(function(el, nm) {
+    p <- el[[feature]]
+    if (is.null(p)) return(NULL)
+    if (add_titles) p <- p + labs(title = nm)
+    p
+  }, variant_plot_list, vnames)
+  
+  # drop missing
+  plots <- plots[!vapply(plots, is.null, logical(1))]
+  if (!length(plots)) stop("No plots found for feature '", feature, "'.")
+  
+  
+  # assemble patchwork grid
+  if(!is.null(reference_umap)){
+    wrap_plots(
+      plots,
+      ncol = ncol,
+      guides = if (isTRUE(collect_legend)) "collect" else "keep"
+    ) | (reference_umap + Seurat::NoLegend()) +
+      plot_annotation(title = feature) &
+      theme(plot.title = element_text(hjust = 0.5))
+  }else{
+    wrap_plots(
+      plots,
+      ncol = ncol,
+      guides = if (isTRUE(collect_legend)) "collect" else "keep"
+    ) +
+      plot_annotation(title = feature) &
+      theme(plot.title = element_text(hjust = 0.5))
+  }
+  
+}
+
+
+.assemble_all_features <- function(variant_plot_list,
+                                  features = c("NGT","AF","DP","GQ"),
+                                  ncol = 4,
+                                  collect_legend = TRUE,
+                                  add_titles = TRUE,
+                                  variant_order = NULL) {
+  res <- lapply(features, function(ftr) {
+    .assemble_feature_grid(
+      variant_plot_list,
+      feature = ftr,
+      ncol = ncol,
+      title = ftr,
+      collect_legend = collect_legend,
+      add_titles = add_titles,
+      variant_order = variant_order
+    )
+  })
+  names(res) <- features
+  res
+}
+
+
+.standardise_ngt_legend <- function(p) {
+  p +
+    scale_color_manual(
+      name   = "NGT",
+      values = ngt_cols,
+      limits = ngt_levels,
+      drop   = FALSE
+    ) +
+    scale_fill_manual(
+      name   = "NGT",
+      values = ngt_cols,
+      limits = ngt_levels,
+      drop   = FALSE,
+      guide  = "none"
+    )
+}
+
+
+
+.make_sankey <- function(
+    M, add_terminals = TRUE, min_count = max(3L, ceiling(0.01 * ncol(M))),
+    terminal_label = "(none)",
+    show_root_residual_when_no_terminals = TRUE,
+    omit_full_terminal = TRUE
+){
+  stopifnot(is.matrix(M), all(M %in% c(0L,1L)))
+  if (is.null(rownames(M))) rownames(M) <- paste0("var", seq_len(nrow(M)))
+  
+  nodes <- data.frame(name = character(), label = character(), stringsAsFactors = FALSE)
+  node_index <- integer(0)
+  add_node <- function(name, label){
+    if (!name %in% names(node_index)) {
+      nodes <<- rbind(nodes, data.frame(name=name, label=label, stringsAsFactors=FALSE))
+      node_index <<- setNames(seq_len(nrow(nodes)) - 1L, nodes$name)
+    }
+    node_index[[name]]
+  }
+  links <- list()
+  
+  split_node <- function(cell_idx, remaining_vars, parent_uid, parent_label, is_root = FALSE){
+    if (length(remaining_vars) == 0L || length(cell_idx) == 0L) return(invisible())
+    parent_id <- add_node(parent_uid, parent_label)
+    
+    # order by prevalence in this subset
+    prev <- rowSums(M[remaining_vars, cell_idx, drop=FALSE]) / length(cell_idx)
+    remaining_vars <- remaining_vars[order(prev, decreasing = TRUE)]
+    
+    residual <- cell_idx
+    made_child <- FALSE
+    
+    for (v in remaining_vars) {
+      yes_cells <- residual[M[v, residual] == 1L]
+      if (length(yes_cells) >= min_count) {
+        made_child <- TRUE
+        v_name <- rownames(M)[v]
+        child_uid <- paste0(parent_uid, "|", v_name)
+        child_id  <- add_node(child_uid, v_name)
+        
+        links[[length(links)+1L]] <<- data.frame(
+          source = parent_id, target = child_id, value = length(yes_cells)
+        )
+        
+        lower_vars <- setdiff(remaining_vars, v)
+        split_node(yes_cells, lower_vars, child_uid, v_name, is_root = FALSE)
+        
+        residual <- setdiff(residual, yes_cells)
+      }
+      if (!length(residual)) break
+    }
+    
+    if (add_terminals) {
+      # size checks
+      res_n <- length(residual)
+      par_n <- length(cell_idx)
+      
+      if (res_n > 0L) {
+        # If terminal would be 100% and we're omitting, skip it
+        if (omit_full_terminal && res_n == par_n) {
+          # no terminal link
+        } else {
+          term_uid <- paste0(parent_uid, "|", terminal_label)
+          term_id  <- add_node(term_uid, terminal_label)
+          links[[length(links)+1L]] <<- data.frame(
+            source = parent_id, target = term_id, value = res_n
+          )
+        }
+      } else if (!made_child) {
+        # Would be a 100% terminal; omit if requested
+        if (!omit_full_terminal) {
+          term_uid <- paste0(parent_uid, "|", terminal_label)
+          term_id  <- add_node(term_uid, terminal_label)
+          links[[length(links)+1L]] <<- data.frame(
+            source = parent_id, target = term_id, value = par_n
+          )
+        }
+      }
+    } else if (is_root && show_root_residual_when_no_terminals && length(residual)) {
+      term_uid <- paste0(parent_uid, "|", terminal_label)
+      term_id  <- add_node(term_uid, terminal_label)
+      links[[length(links)+1L]] <<- data.frame(
+        source = parent_id, target = term_id, value = length(residual)
+      )
+    }
+  }
+  
+  all_cells <- seq_len(ncol(M))
+  all_vars  <- seq_len(nrow(M))
+  split_node(all_cells, all_vars, parent_uid="All cells", parent_label="All cells", is_root=TRUE)
+  
+  list(nodes = nodes, links = do.call(rbind, links))
+}

@@ -1,0 +1,64 @@
+Package: SCARCE
+Title: Single-Cell Analysis of Rare Clonal Events
+Version: 0.1.0
+Authors@R: 
+    person("Rhys", "Gillman", email = "rhysgillman@gmail.com", role = c("aut", "cre"))
+Description: R package for prioritising somatic variants in heterogeneous
+    single-cell DNA sequencing data.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends: 
+    R (>= 4.1)
+Imports: 
+    circlize,
+    ComplexHeatmap,
+    ComplexUpset,
+    data.table,
+    dbscan,
+    dplyr,
+    egg,
+    foreach,
+    GenomeInfoDb,
+    GenomicRanges,
+    ggnewscale,
+    ggplot2,
+    ggpubr,
+    HDF5Array,
+    htmlwidgets,
+    magrittr,
+    Matrix,
+    matrixStats,
+    methods,
+    networkD3,
+    patchwork,
+    pheatmap,
+    RColorBrewer,
+    readr,
+    readxl,
+    rhdf5,
+    rlang,
+    Rsamtools,
+    rstatix,
+    S4Vectors,
+    scales,
+    SCINA,
+    Seurat,
+    stringr,
+    SummarizedExperiment,
+    tibble,
+    tidyr,
+    UpSetR,
+    uwot,
+    VariantAnnotation,
+    vcfR,
+    withr
+Suggests: 
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+SystemRequirements: 
+    VEP, htslib
+VignetteBuilder: knitr

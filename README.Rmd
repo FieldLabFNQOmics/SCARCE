@@ -1,60 +1,52 @@
+---
+output: github_document
+---
 
 # SCARCE
 
 ### Single-Cell Analysis of Rare Clonal Events
 
-------------------------------------------------------------------------
+---
 
 ## Overview
 
-**SCARCE** (*Single-Cell Analysis of Rare Clonal Events*) is an R
-package for prioritising and visualising **rare somatic mutations** in
-single-cell DNA sequencing data such as **MissionBio Tapestri**
-datasets.
+**SCARCE** (*Single-Cell Analysis of Rare Clonal Events*) is an R package for prioritising and visualising **rare somatic mutations** in single-cell DNA sequencing data such as **MissionBio Tapestri** datasets.
 
-<figure>
-<img src="man/figures/workflow.png" alt="Workflow Diagram" />
-<figcaption aria-hidden="true">Workflow Diagram</figcaption>
-</figure>
+![Workflow Diagram](man/figures/workflow.png)
 
-It provides an integrated pipeline that: - Defines subpopulations of
-cells based on surface-marker expression or variant profiling - Runs VEP
-variant annotation - Detects and prioritises somatic variants - Performs
-cell-type enrichment testing - Generates several statistical reports -
-Generates barplots, UMAPs, Sankey plots, and heatmaps for variant-level
-visualisation
+It provides an integrated pipeline that:
+- Defines subpopulations of cells based on surface-marker expression or variant profiling
+- Runs VEP variant annotation
+- Detects and prioritises somatic variants
+- Performs cell-type enrichment testing
+- Generates several statistical reports
+- Generates barplots, UMAPs, Sankey plots, and heatmaps for variant-level visualisation
 
-------------------------------------------------------------------------
+---
 
 ## Installation
 
-``` r
+```{r, eval=FALSE, include=T}
 # install.packages("devtools")
 devtools::install_github("FieldLabFNQOmics/SCARCE")
 ```
 
-Note: You will also need Ensembl VEP and htslib installed on your
-system.
+Note: You will also need Ensembl VEP and htslib installed on your system.  
 
-------------------------------------------------------------------------
+---
 
 ## Quick Start Example
 
+
 ### Variant-Only Workflow
 
-This workflow requires only variant data, which can be provided in the
-form of a .h5 file or .vcf/.vcf.gz
+This workflow requires only variant data, which can be provided in the form of a .h5 file or .vcf/.vcf.gz
 
-Note: If using VCF input format, SCARCE requires a gzipped input file
-with an index generated using Tabix. This can be peformed within SCARCE
-using the prep_vcf and prep_vcf_dir arguments of
-find_somatic_variants().
+Note: If using VCF input format, SCARCE requires a gzipped input file with an index generated using Tabix. This can be peformed within SCARCE using the prep_vcf and prep_vcf_dir arguments of find_somatic_variants().
 
-A test dataset is provided in inst/extdata/ which is subsampled from the
-MissionBio “2 PBMC + KG-1 Sample Mix for PBMC Subclone Identification
-Analysis” sample (<https://portal.missionbio.com/>)
+A test dataset is provided in inst/extdata/ which is subsampled from the MissionBio "2 PBMC + KG-1 Sample Mix for PBMC Subclone Identification Analysis" sample (https://portal.missionbio.com/)
 
-``` r
+```{r, eval=FALSE, include=T}
 library(SCARCE)
 
 input_file <- system.file("extdata", "test_data.h5", package = "SCARCE")
@@ -139,19 +131,18 @@ plot_variants(seurat_obj = variant_clusters_seurat,
               topn_col = "p", 
               sankey_min_count = 5,
               include_UMAP_ref = F)
+
 ```
+
+
 
 ### ADT Workflow
 
-This workflow requires antibody-derived tag (ADT) surface marker
-expression data as well as variant information, usually provided
-together in a .h5 file for MissionBio Tapestri data.
+This workflow requires antibody-derived tag (ADT) surface marker expression data as well as variant information, usually provided together in a .h5 file for MissionBio Tapestri data.
 
-Cell markers may be provided as a list, or (default) may be provided
-with the CellMarker2.0 Marker database
-(<http://117.50.127.228/CellMarker/CellMarker_download_files/file/Cell_marker_Human.xlsx>)
+Cell markers may be provided as a list, or (default) may be provided with the CellMarker2.0 Marker database (http://117.50.127.228/CellMarker/CellMarker_download_files/file/Cell_marker_Human.xlsx)
 
-``` r
+```{r, eval=FALSE, include=T}
 library(SCARCE)
 
 input_file <- system.file("extdata", "test_data.h5", package = "SCARCE")
@@ -248,6 +239,10 @@ plot_variants(seurat_obj = seurat,
               topn_col = "p", 
               sankey_min_count = 5,
               include_UMAP_ref = T)
+
 ```
 
-------------------------------------------------------------------------
+
+
+---
+

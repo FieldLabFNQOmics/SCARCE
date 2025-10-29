@@ -1,0 +1,12 @@
+^LICENSE\.md$
+^README\.Rmd$
+^dev$
+^scratch$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^.*\.Rproj$
+^\.Rproj\.user$
+^package_setup\.r$
+^check_logs$
+^^inst/extdata/test_data\\.h5$$
