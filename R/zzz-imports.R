@@ -9,21 +9,26 @@
 #' @importFrom grDevices colorRampPalette dev.off png
 
 #' @importFrom magrittr %>%
-#' @importFrom dplyr filter mutate group_by summarise across everything arrange desc row_number relocate left_join pull
-#' @importFrom tidyr pivot_longer pivot_wider
+#' @importFrom dplyr filter mutate group_by ungroup summarise across everything arrange desc row_number relocate left_join pull bind_cols bind_rows case_when reframe rowwise ungroup
+#' @importFrom tidyr pivot_longer pivot_wider ends_with
 #' @importFrom tibble rownames_to_column column_to_rownames enframe deframe
 #' @importFrom stringr str_detect str_extract str_split
 #' @importFrom rlang .data sym
+#' @importFrom foreach %do% foreach
 
-#' @importFrom ggplot2 ggplot aes geom_point geom_bar geom_text position_stack
+#' @importFrom ggplot2 ggplot aes geom_point geom_bar geom_text position_stack coord_equal geom_histogram
 #' @importFrom ggplot2 guides guide_legend theme theme_bw theme_classic element_text labs
 #' @importFrom ggplot2 scale_color_manual scale_colour_gradient2 scale_color_discrete scale_fill_manual scale_y_continuous ggtitle ggsave
 #' @importFrom patchwork wrap_plots plot_annotation
-#' @importFrom ComplexHeatmap Heatmap HeatmapAnnotation rowAnnotation Legend draw
+#' @importFrom ComplexHeatmap Heatmap HeatmapAnnotation rowAnnotation Legend draw anno_simple
 #' @importFrom circlize colorRamp2
 #' @importFrom grid unit
 #' @importFrom ComplexUpset upset
 #' @importFrom networkD3 sankeyNetwork
+#' @importFrom RColorBrewer brewer.pal
+#' @importFrom SCINA SCINA
+#' @importFrom Seurat CreateSeuratObject DefaultAssay<- DimPlot DoHeatmap ElbowPlot Embeddings FeaturePlot FindClusters FindNeighbors GetAssayData Idents Idents<- NormalizeData RunPCA RunUMAP ScaleData
+#' @importFrom SeuratObject Features
 
 #' @importFrom data.table fread := setnames rbindlist
 #' @importFrom readr write_tsv
