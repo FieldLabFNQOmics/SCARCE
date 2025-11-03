@@ -426,7 +426,7 @@ find_somatic_variants <- function(h5_in=NULL,
     } 
   }else{
     variants <- variants %>%
-      mutate(plot_ID=ID)
+      mutate(plot_ID=variant)
   }
   
   #################################################################
@@ -932,9 +932,16 @@ find_somatic_variants <- function(h5_in=NULL,
         write_tsv(full_results %>%
                     filter(filter==".") %>%
                     dplyr::select(-filter), ct_pass_file, append = FALSE, col_names = TRUE)
-        write_tsv(full_results %>%
-                    filter(filter==".",priority_flag==1) %>%
-                    dplyr::select(-c(filter,priority_flag)), ct_pass_priority_file, append = FALSE, col_names = TRUE)
+        
+        if (isFALSE(skip_vep)) {
+          write_tsv(full_results %>%
+                      filter(filter==".",priority_flag==1) %>%
+                      dplyr::select(-c(filter,priority_flag)), ct_pass_priority_file, append = FALSE, col_names = TRUE)
+        }
+        
+        
+        
+        
         
       }else{
         write_tsv(full_results, ct_file, append = FALSE, col_names = TRUE)

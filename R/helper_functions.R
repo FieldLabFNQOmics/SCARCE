@@ -22,7 +22,12 @@
   schema <- setNames(as.character(vapply(head_file, class, "")), names(head_file))
   
   override <- c("MAX_AF"="double","chromosome"="character")
-  schema[names(override)] <- unname(override)
+  
+  for(i in 1:length(override)){
+    if(names(override)[i] %in% names(schema)){
+      schema[names(override)[i]] <- unname(override)[i]
+    }
+  }
   
   return(schema)
 }

@@ -10,3 +10,5 @@
 ^package_setup\.r$
 ^check_logs$
 ^^inst/extdata/test_data\\.h5$$
+^doc$
+^Meta$

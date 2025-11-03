@@ -48,6 +48,7 @@ A test dataset is provided in inst/extdata/ which is subsampled from the Mission
 
 ```{r, eval=FALSE, include=T}
 library(SCARCE)
+library(Seurat)
 
 input_file <- system.file("extdata", "test_data.h5", package = "SCARCE")
 
@@ -104,6 +105,7 @@ variant_annotations <- Idents(variant_clusters_seurat)
 
 find_somatic_variants(h5_in = input_file,
                       cell_annotations = variant_annotations,
+                      use_vep_file = "output/test_data_vep_annotated.vcf",
                       min_varcount_total = 5,
                       min_varcount_celltype = 5,
                       max_varportion_total = 0.1,
@@ -144,6 +146,7 @@ Cell markers may be provided as a list, or (default) may be provided with the Ce
 
 ```{r, eval=FALSE, include=T}
 library(SCARCE)
+library(Seurat)
 
 input_file <- system.file("extdata", "test_data.h5", package = "SCARCE")
 
@@ -242,7 +245,88 @@ plot_variants(seurat_obj = seurat,
 
 ```
 
+### Skip VEP (Fast Example)
 
+For a faster and simpler use-case, users can choose to skip VEP annotations in either of the above workflows.
+
+```{r, eval=FALSE, include=T}
+library(SCARCE)
+library(Seurat)
+
+input_file <- system.file("extdata", "test_data.h5", package = "SCARCE")
+
+dir.create("results", showWarnings = FALSE)
+dir.create("plots", showWarnings = FALSE)
+
+# Prepare ADT annotation data and create Seurat object
+
+seurat <- prepare_annotation_data(input_file = input_file,
+                        sample_ID = "test_data", 
+                        cluster_resolutions = 0.2, k_param = 10,
+                        save_directory = "output", 
+                        qc_plot_directory = "plots")
+
+# Automatically annotate cells and produce QC plots
+
+seurat <- annotate_cells(seurat_obj = seurat,
+                         plot_directory = "plots", 
+                         CellMarker_path = "path/to/CellMarker2.0/Cell_marker_Human.xlsx")
+
+# After reviewing the output plots in the "plots" directory, determine cluster annotations
+
+manual_annotations <- c(
+  "0"="Macrophage_or_Monocyte",
+  "1"="CD4 T Cell",
+  "2"="CD8 T Cell",
+  "3"="B Cell",
+  "4"="NK Cell",
+  "5"="Plasma Cell",
+  "6"="Possible Tumour Cell"
+)
+
+seurat <- annotate_clusters(seurat_obj = seurat, annotations = manual_annotations, resolution = 0.2, plot_directory = "output")
+
+saveRDS(seurat, "output/seurat_ADT.rds")
+
+seurat <- readRDS("output/seurat_ADT.rds")
+
+# Retrieve cell annotations
+
+cell_annotations=Idents(seurat)
+
+# Find enriched variants
+
+find_somatic_variants(h5_in = input_file,
+                      skip_vep = T,
+                      cell_annotations = cell_annotations,
+                      min_varcount_total = 5,
+                      min_varcount_celltype = 5,
+                      max_varportion_total = 0.1,
+                      out_dir = "output",
+                      file_prefix = "test_data_ADT_clusters", 
+                      block = 10000,
+                      run_cell_type_enrichment = T
+)
+
+# Generate plots
+
+plot_variants(seurat_obj = seurat,
+              umap_reduction = "umap",
+              file_prefix = "test_data_ADT_clusters",
+              focus_celltype = "Possible Tumour Cell",
+              n_variants = 20,
+              result_dir = "output",
+              plot_directory = "output",
+              plot_prefix = "test_data_ADT_clusters",
+              min_varcount_total = 2,
+              max_alt_portion_total = 0.5,
+              topn_col = "p", 
+              sankey_min_count = 5,
+              include_UMAP_ref = T,
+              priority_only = F,
+              damaging = F)
+
+```
 
 ---
 

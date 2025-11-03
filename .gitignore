@@ -57,3 +57,5 @@ check_logs
 *.Rcheck/
 SCARCE_*.tar.gz
 inst/doc/
+/doc/
+/Meta/
