@@ -450,8 +450,6 @@ plot_variants <- function(
       variant_row <- as.matrix(variant_row[barcodes])
       AF <- apply(variant_row, 2, .pull_AF) %>% as.numeric()
       as.data.frame(matrix(AF, nrow = 1))
-      
-      variant_row
     }
     dimnames(HM_data) <- list(URLdecode(variants), barcodes)
     
