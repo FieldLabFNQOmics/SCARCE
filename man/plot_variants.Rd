@@ -35,7 +35,8 @@ plot_variants(
   run_umap = T,
   run_sankey = T,
   heatmap_anno = "padj",
-  include_UMAP_ref = T
+  include_UMAP_ref = T,
+  windows_mode = F
 )
 }
 \arguments{
@@ -121,6 +122,8 @@ useful when plotting many variants in grids.}
 \item{heatmap_anno}{Which feature should be used to annotate the heatmap. Either "padj" or "OR"}
 
 \item{include_UMAP_ref}{Include reference UMAP image in generate AF and NGT umaps? (TRUE / FALSE)}
+
+\item{windows_mode}{Is SCARCE being run on windows? (Default = FALSE)}
 }
 \value{
 Seurat object

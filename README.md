@@ -88,7 +88,7 @@ vep_config(
 
 find_somatic_variants(h5_in = input_file, 
                       run_cell_type_enrichment = F,
-                      out_dir = "output",
+                      out_dir = "results",
                       file_prefix = "test_data",
                       block = 10000) # smaller blocks will reduce peak memory usage for larger datasets
 
@@ -97,13 +97,13 @@ find_somatic_variants(h5_in = input_file,
 
 variant_clusters_seurat <- cluster_variants(
   sample_ID = "test_data",
-  genotypes_file = "output/test_data_genotypes.tsv", 
-  summary_file = "output/test_data_summary.tsv", 
+  genotypes_file = "results/test_data_genotypes.tsv", 
+  summary_file = "results/test_data_summary.tsv", 
   plot_directory = "plots", 
   rare_frequency_max = 0.05,
   n_features = 100)
 
-saveRDS(variant_clusters_seurat, "output/seurat_variants.rds")
+saveRDS(variant_clusters_seurat, "results/seurat_variants.rds")
 
 # Retrieve cell annotations
 
@@ -113,11 +113,11 @@ variant_annotations <- Idents(variant_clusters_seurat)
 
 find_somatic_variants(h5_in = input_file,
                       cell_annotations = variant_annotations,
-                      use_vep_file = "output/test_data_vep_annotated.vcf",
+                      use_vep_file = "results/test_data_vep_annotated.vcf",
                       min_varcount_total = 5,
                       min_varcount_celltype = 5,
                       max_varportion_total = 0.1,
-                      out_dir = "output",
+                      out_dir = "results",
                       file_prefix = "test_data_variant_clusters", 
                       block = 10000,
                       run_cell_type_enrichment = T)
@@ -130,7 +130,7 @@ plot_variants(seurat_obj = variant_clusters_seurat,
               focus_celltype="0",
               file_prefix = "test_data_variant_clusters",
               n_variants = 20,
-              result_dir = "output",
+              result_dir = "results",
               plot_directory = "plots",
               plot_prefix = "test_data_variant_clusters",
               damaging = FALSE,
@@ -188,7 +188,7 @@ vep_config(
 seurat <- prepare_annotation_data(input_file = input_file,
                         sample_ID = "test_data", 
                         cluster_resolutions = 0.2, k_param = 10,
-                        save_directory = "output", 
+                        save_directory = "results", 
                         qc_plot_directory = "plots")
 
 # Automatically annotate cells and produce QC plots
@@ -209,11 +209,11 @@ manual_annotations <- c(
   "6"="Possible Tumour Cell"
 )
 
-seurat <- annotate_clusters(seurat_obj = seurat, annotations = manual_annotations, resolution = 0.2, plot_directory = "output")
+seurat <- annotate_clusters(seurat_obj = seurat, annotations = manual_annotations, resolution = 0.2, plot_directory = "results")
 
-saveRDS(seurat, "output/seurat_ADT.rds")
+saveRDS(seurat, "results/seurat_ADT.rds")
 
-seurat <- readRDS("output/seurat_ADT.rds")
+seurat <- readRDS("results/seurat_ADT.rds")
 
 # Retrieve cell annotations
 
@@ -226,12 +226,12 @@ find_somatic_variants(h5_in = input_file,
                       min_varcount_total = 5,
                       min_varcount_celltype = 5,
                       max_varportion_total = 0.1,
-                      out_dir = "output",
+                      out_dir = "results",
                       file_prefix = "test_data_ADT_clusters", 
                       block = 10000,
                       priority_only = F, 
                       run_cell_type_enrichment = T,
-                      use_vep_file = "output/test_data_ADT_clusters_vep_annotated.vcf"
+                      use_vep_file = "results/test_data_ADT_clusters_vep_annotated.vcf"
 )
 
 # Generate plots
@@ -241,8 +241,8 @@ plot_variants(seurat_obj = seurat,
               file_prefix = "test_data_ADT_clusters",
               focus_celltype = "Possible Tumour Cell",
               n_variants = 20,
-              result_dir = "output",
-              plot_directory = "output",
+              result_dir = "results",
+              plot_directory = "plots",
               plot_prefix = "test_data_ADT_clusters",
               damaging = FALSE,
               priority_only = FALSE,
@@ -272,7 +272,7 @@ dir.create("plots", showWarnings = FALSE)
 seurat <- prepare_annotation_data(input_file = input_file,
                         sample_ID = "test_data", 
                         cluster_resolutions = 0.2, k_param = 10,
-                        save_directory = "output", 
+                        save_directory = "results", 
                         qc_plot_directory = "plots")
 
 # Automatically annotate cells and produce QC plots
@@ -293,11 +293,11 @@ manual_annotations <- c(
   "6"="Possible Tumour Cell"
 )
 
-seurat <- annotate_clusters(seurat_obj = seurat, annotations = manual_annotations, resolution = 0.2, plot_directory = "output")
+seurat <- annotate_clusters(seurat_obj = seurat, annotations = manual_annotations, resolution = 0.2, plot_directory = "plots")
 
-saveRDS(seurat, "output/seurat_ADT.rds")
+saveRDS(seurat, "results/seurat_ADT.rds")
 
-seurat <- readRDS("output/seurat_ADT.rds")
+seurat <- readRDS("results/seurat_ADT.rds")
 
 # Retrieve cell annotations
 
@@ -311,7 +311,7 @@ find_somatic_variants(h5_in = input_file,
                       min_varcount_total = 5,
                       min_varcount_celltype = 5,
                       max_varportion_total = 0.1,
-                      out_dir = "output",
+                      out_dir = "results",
                       file_prefix = "test_data_ADT_clusters", 
                       block = 10000,
                       run_cell_type_enrichment = T
@@ -324,8 +324,8 @@ plot_variants(seurat_obj = seurat,
               file_prefix = "test_data_ADT_clusters",
               focus_celltype = "Possible Tumour Cell",
               n_variants = 20,
-              result_dir = "output",
-              plot_directory = "output",
+              result_dir = "results",
+              plot_directory = "plots",
               plot_prefix = "test_data_ADT_clusters",
               min_varcount_total = 2,
               max_alt_portion_total = 0.5,

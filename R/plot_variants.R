@@ -57,6 +57,7 @@
 #' @param run_sankey Generate Sankey plots
 #' @param heatmap_anno Which feature should be used to annotate the heatmap. Either "padj" or "OR"
 #' @param include_UMAP_ref Include reference UMAP image in generate AF and NGT umaps? (TRUE / FALSE)
+#' @param windows_mode Is SCARCE being run on windows? (Default = FALSE)
 #' @return Seurat object
 #' @export
 
@@ -93,7 +94,8 @@ plot_variants <- function(
     run_umap=T,
     run_sankey=T,
     heatmap_anno="padj",
-    include_UMAP_ref=T
+    include_UMAP_ref=T,
+    windows_mode=F
 ){
   .is_mutated <- function(s) {
     components <- unlist(str_split(s, ";"))
@@ -276,13 +278,22 @@ plot_variants <- function(
     message("Retrieving variant counts per cell-type")
     
     variant_counts <- foreach(variant=variants, .combine = "bind_rows") %do% {
+      
+      if(!windows_mode){
+        cmd <- sprintf("grep -Fw '%s' '%s'", variant, file.path(result_dir,variant_counts_file))
+      }else{
+        cmd <- sprintf('cmd /c findstr /C:"%s" "%s"', gsub('"','""', variant, fixed=TRUE), normalizePath(file.path(result_dir, variant_counts_file), mustWork = TRUE))
+      }
+      
       suppressWarnings(variant_row <- data.table::fread(
-        cmd = sprintf("grep -Fw '%s' '%s'", variant, file.path(result_dir,variant_counts_file)),
+        cmd = cmd,
         sep = "\t",
         #header=F,
         col.names  = names(variant_counts_cols), colClasses = unname(variant_counts_cols)
       ) %>% 
         as.data.frame())
+      
+      variant_row
     } %>%
       # deal with special case duplicate plot_IDs
       #mutate(plot_ID=ifelse(plot_ID %in% plot_ID[which(duplicated(plot_ID))], paste0(plot_ID,"(",variant,")"), plot_ID)) %>%
@@ -360,8 +371,15 @@ plot_variants <- function(
     }else{
       
       upset_data <- foreach(v=names(variants)) %do% {
+        
+        if(!windows_mode){
+          cmd <- sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file))
+        }else{
+          cmd <- sprintf('cmd /c findstr /C:"%s" "%s"', gsub('"','""', v, fixed=TRUE), normalizePath(file.path(result_dir,genotype_file), mustWork = TRUE))
+        }
+        
         variant_row <- data.table::fread(
-          cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+          cmd = cmd,
           sep = "\t",
           col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
         ) %>% 
@@ -371,6 +389,7 @@ plot_variants <- function(
         mutated <- vapply(variant_row, .is_mutated, logical(1))
         names(which(mutated))
         
+        variant_row
       }
       names(upset_data) <- URLdecode(variants)
       
@@ -414,8 +433,15 @@ plot_variants <- function(
   if(run_heatmap){
     
     HM_data <- foreach(v=names(variants), .combine = "bind_rows") %do% {
+      
+      if(!windows_mode){
+        cmd <- sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file))
+      }else{
+        cmd <- sprintf('cmd /c findstr /C:"%s" "%s"', gsub('"','""', v, fixed=TRUE), normalizePath(file.path(result_dir,genotype_file), mustWork = TRUE))
+      }
+      
       variant_row <- data.table::fread(
-        cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+        cmd = cmd,
         sep = "\t",
         col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
       ) %>% 
@@ -424,6 +450,8 @@ plot_variants <- function(
       variant_row <- as.matrix(variant_row[barcodes])
       AF <- apply(variant_row, 2, .pull_AF) %>% as.numeric()
       as.data.frame(matrix(AF, nrow = 1))
+      
+      variant_row
     }
     dimnames(HM_data) <- list(URLdecode(variants), barcodes)
     
@@ -600,8 +628,14 @@ plot_variants <- function(
     }else{
       umap_plots <- foreach(v=names(variants)) %do% {
         
+        if(!windows_mode){
+          cmd <- sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file))
+        }else{
+          cmd <- sprintf('cmd /c findstr /C:"%s" "%s"', gsub('"','""', v, fixed=TRUE), normalizePath(file.path(result_dir,genotype_file), mustWork = TRUE))
+        }
+        
         seurat_anno_data <- data.table::fread(
-          cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+          cmd = cmd,
           sep = "\t",
           col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
         ) %>% 
@@ -739,8 +773,15 @@ plot_variants <- function(
   if(run_sankey){
     
     mut_matrix <- foreach(v=names(variants), .combine="bind_rows") %do% {
+      
+      if(!windows_mode){
+        cmd <- sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file))
+      }else{
+        cmd <- sprintf('cmd /c findstr /C:"%s" "%s"', gsub('"','""', v, fixed=TRUE), normalizePath(file.path(result_dir,genotype_file), mustWork = TRUE))
+      }
+      
       variant_row <- data.table::fread(
-        cmd = sprintf("grep -Fw '%s' '%s'", v, file.path(result_dir,genotype_file)),
+        cmd = cmd,
         sep = "\t",
         col.names  = names(genotype_cols), colClasses = unname(genotype_cols)
       ) %>% 
