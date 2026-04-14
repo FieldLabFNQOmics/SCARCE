@@ -269,6 +269,8 @@ plot_variants <- function(
     }
   }
   
+  return_plot_list <- list()
+  
   ################################
   # Variant Counts Per Cell Type #
   ################################
@@ -346,16 +348,27 @@ plot_variants <- function(
       mutate(plot_ID = factor(plot_ID, levels = URLdecode(unname(variants))))
     
     p <- ggplot(bar_data, aes(x=plot_ID, fill=cell_type, y=alt_frequency, label=sig)) +
-      geom_bar(stat = "identity", position = "stack") +
-      geom_text(position=position_stack(vjust = 0.5)) +
-      labs(x="Variant ID", y="Mutant Allele Proportion") +
+      geom_bar(stat = "identity", position = position_dodge(width = 0.75)) +
+      geom_text(position = position_dodge(width = 0.75), vjust = -0.3, size = 3) +
+      labs(x="Variant ID", y="Mutant Cell Proportion") +
       guides(fill=guide_legend(title="Cell Type")) +
+      geom_vline(
+        xintercept = seq(1.5, length(unique(bar_data$plot_ID)) - 0.5, 1),
+        color = "black", linewidth = 0.2
+      ) +
       theme_bw() +
-      theme(axis.text.x = element_text(angle=90, hjust=1))
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        panel.grid.major.x = element_blank(),   # remove vertical gridlines
+        panel.grid.minor.x = element_blank(),   # remove minor vertical gridlines
+        panel.spacing = unit(1, "lines")
+      )
     
     plot_width= length(variants)+5
     
     ggsave(plot = p,file.path(plot_directory,paste0(plot_prefix,"_barplot.png")), width = plot_width, units = "cm")
+    
+    return_plot_list[["barplot"]] <- p
     
     message(paste0("Saved plot showing variant count per cell-type to ", file.path(plot_directory,paste0(plot_prefix,"_barplot.png"))))
   
@@ -389,7 +402,7 @@ plot_variants <- function(
         mutated <- vapply(variant_row, .is_mutated, logical(1))
         names(which(mutated))
         
-        variant_row
+        #variant_row
       }
       names(upset_data) <- URLdecode(variants)
       
@@ -417,7 +430,7 @@ plot_variants <- function(
       ggsave(file.path(plot_directory, paste0(plot_prefix, "_upset.png")),
              p, width = 20, height = 20, units = "cm", dpi = 300, bg = "white")
       
-      
+      return_plot_list[["upset"]] <- p
       #png(filename=file.path(plot_directory,paste0(plot_prefix,"_upset.png")),res = 300, width = 20, height = 20, units = "cm", type = "cairo")
       #on.exit(grDevices::dev.off(), add = TRUE)
       #grid::grid.newpage()
@@ -448,7 +461,7 @@ plot_variants <- function(
         as.data.frame() %>%
         filter(variant==v)
       variant_row <- as.matrix(variant_row[barcodes])
-      AF <- apply(variant_row, 2, .pull_AF) %>% as.numeric()
+      AF <- suppressWarnings(apply(variant_row, 2, .pull_AF) %>% as.numeric())
       as.data.frame(matrix(AF, nrow = 1))
     }
     dimnames(HM_data) <- list(URLdecode(variants), barcodes)
@@ -589,13 +602,15 @@ plot_variants <- function(
     
     # save
     png(file.path(plot_directory,paste0(plot_prefix,"_AF_heatmap.png")),
-        width = plot_width, height = 3000, res = 300)
+        width = plot_width, height = 2000, res = 300)
     
     draw(ht,
          heatmap_legend_side = "right",
          annotation_legend_side = "top",
          annotation_legend_list = list(p_legend))
     dev.off()
+    
+    return_plot_list[["HM_data"]] <- HM_data
     
     message(paste0("Saved allele frequency heatmap to ", file.path(plot_directory,paste0(plot_prefix,"_AF_heatmap.png"))))
   
@@ -648,9 +663,13 @@ plot_variants <- function(
         
         seurat_anno_data <- data.table::transpose(as.data.frame(strsplit(seurat_anno_data, ";", fixed = T)),keep.names = "barcode")
         colnames(seurat_anno_data) <- c("barcode", genotype_format_fields)
+        seurat_anno_data <- seurat_anno_data %>% mutate(barcode=barcodes)
         seurat_anno_data <- suppressWarnings(seurat_anno_data %>%
-          mutate(across(-barcode,as.numeric)))
+          mutate(across(-barcode,as.numeric))) %>%
+          mutate(GQ=ifelse(!NGT%in%c(1,2), NA, GQ),
+                 DP=ifelse(!NGT%in%c(1,2), NA, DP))
         
+        max_DP <- max(seurat_anno_data$DP, na.rm = T)
         
         # Prepare safe column name suffix based on variant (for uniqueness)
         safe_var <- gsub("[^A-Za-z0-9_]+", "_", v)
@@ -675,11 +694,15 @@ plot_variants <- function(
           seurat_obj <- add_col(seurat_obj,as.vector(seurat_anno_data[[value]]), value)
         }
         
-        plot_features <- colnames(seurat_obj@meta.data)[which(str_detect(colnames(seurat_obj@meta.data), safe_var))]
+        #plot_features <- colnames(seurat_obj@meta.data)[which(str_detect(colnames(seurat_obj@meta.data), safe_var))]
+        
+        plot_features <- colnames(seurat_obj@meta.data)[
+          str_detect(colnames(seurat_obj@meta.data), paste0("^(?:", paste(genotype_format_fields, collapse="|"), ")_", safe_var, "$"))
+        ]
         
         plots <- foreach(feature=plot_features) %do% {
           type <- str_extract(feature, "^([^_]+)_", group = 1)
-          if (type=="NGT") {
+          if (!is.na(type) && type == "NGT") {
             
             seurat_obj[[feature]] <- factor(
               as.vector(seurat_obj[[feature]])[[1]],
@@ -692,7 +715,7 @@ plot_variants <- function(
             ) + ggplot2::ggtitle(paste0(v)) +
               scale_color_manual(
                 name   = "NGT",
-                values = c(WT="#6baed6", HET="#EDE953", HOM="#E03512", Unavailable="darkgrey"),
+                values = c(WT="#6baed6", HET="#EDE953", HOM="#E03512", Unavailable="lightgrey"),
                 limits = c("WT","HET","HOM","Unavailable"),
                 drop   = FALSE
               ) +
@@ -709,15 +732,32 @@ plot_variants <- function(
               p <- p + guides(colour="none")
             }
             
+          }else if(!is.na(type) && type == "GQ"){
+            p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
+                                    ggplot2::ggtitle(paste0(type,": ", v)) +
+                                    scale_colour_gradient2(type, 
+                                                           limits = c(0,100), 
+                                                           breaks = c(0,50,100), 
+                                                           low = "#E03512", mid= "#EDE953",high = "#38ab4d",
+                                                           midpoint = 50,
+                                                           oob = scales::squish, na.value = "lightgrey") +
+                                    theme(plot.title = element_text(size = umap_plot_title_size),
+                                          legend.title = element_text(size = umap_legend_title_size),
+                                          legend.text = element_text(size=umap_legend_label_size),
+                                          axis.title = element_text(size = umap_axis_title_size),
+                                          axis.text = element_text(size = umap_axis_lables_size)
+                                    )
+            )
+            
           }else{
             p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
               ggplot2::ggtitle(paste0(type,": ", v)) +
-              scale_colour_gradient2("AF", 
+              scale_colour_gradient2(type, 
                                      limits = c(0,1), 
                                      breaks = c(0,0.5,1), 
                                      low = "#6baed6", mid= "#EDE953",high = "#E03512",
                                      midpoint = 0.5,
-                                     oob = scales::squish, na.value = "darkgrey") +
+                                     oob = scales::squish, na.value = "lightgrey") +
               theme(plot.title = element_text(size = umap_plot_title_size),
                     legend.title = element_text(size = umap_legend_title_size),
                     legend.text = element_text(size=umap_legend_label_size),
@@ -757,11 +797,23 @@ plot_variants <- function(
       ggsave(plot = NGT_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_NGT.png")),  width = 40, height = plot_height, units = "cm")
       message(paste0("Saved genotype UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_NGT.png")))
       
+      return_plot_list[["NGT_UMAP"]] <- NGT_plots
+      
       AF_plots <- .assemble_feature_grid(variant_plot_list=umap_plots, feature = "AF", 
                                          reference_umap=if(include_UMAP_ref) annotated_umap else NULL, 
                                          ncol = if(length(variants) < 3) length(variants) else 3)
       ggsave(plot = AF_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_AF.png")),  width = 40, height = plot_height, units = "cm")
       message(paste0("Saved allele-frequency UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_AF.png")))
+      
+      return_plot_list[["AF_UMAP"]] <- AF_plots
+      
+      GQ_plots <- .assemble_feature_grid(variant_plot_list=umap_plots, feature = "GQ", 
+                                         reference_umap=if(include_UMAP_ref) annotated_umap else NULL, 
+                                         ncol = if(length(variants) < 3) length(variants) else 3)
+      ggsave(plot = GQ_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_GQ.png")),  width = 40, height = plot_height, units = "cm")
+      message(paste0("Saved genotype quality UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_GQ.png")))
+      
+      return_plot_list[["GQ_UMAP"]] <- GQ_plots
     }
   }
   ###############
@@ -802,13 +854,17 @@ plot_variants <- function(
     p <- sankeyNetwork(
       Links = sk$links, Nodes = sk$nodes,
       Source = "source", Target = "target", Value = "value",
-      NodeID = "label", fontSize = 12, nodeWidth = 24, sinksRight = FALSE,height = 400, width=2000, fontFamily = "sans-serif"
+      NodeID = "label", fontSize = 16, nodeWidth = 16, sinksRight = FALSE,height = 400, width=1500, fontFamily = "sans-serif"
     )
     
     
     htmlwidgets::saveWidget(p, file = file.path(plot_directory,paste0(plot_prefix,"_sankey.html")))
     message(paste0("Saved Sankey plot to "), file.path(plot_directory,paste0(plot_prefix,"_sankey.html")))
+    
+    return_plot_list[["sankey"]] <- p
   }
+  
+  invisible(return_plot_list)
 }
 
 
