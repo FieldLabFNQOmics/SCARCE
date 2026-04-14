@@ -24,6 +24,7 @@ find_somatic_variants(
   min_datacount_total = 100,
   min_dataportion_total = 0.25,
   min_quality_mean_total = 0.3,
+  min_depth_mean_total = 5,
   min_allelefreq_mean_total = 0,
   min_allelefreq_mean_mutants = 0.1,
   rare_cutoff = 0.02,
@@ -40,7 +41,9 @@ find_somatic_variants(
   run_cell_type_enrichment = TRUE,
   genome_version = "hg19",
   threads = 4,
-  use_vep_file = NULL
+  use_vep_file = NULL,
+  AF_in_percent = NULL,
+  cell_filter = NULL
 )
 }
 \arguments{
@@ -74,8 +77,7 @@ flagged as priority by VEP (rare protein-impacting). Ignored when \code{skip_vep
 
 \item{block}{Integer; number of variants per processing chunk for memory efficiency.}
 
-\item{min_DP_per_call}{Minimum depth (DP) for a per-cell genotype to be considered;
-calls failing are masked (\code{AF=NA}, \code{NGT=3}).}
+\item{min_DP_per_call}{Minimum depth (DP) for a per-cell genotype to be considered}
 
 \item{min_GQ_per_call}{Minimum genotype quality (GQ) for a per-cell genotype to be
 considered; calls failing are masked (\code{AF=NA}, \code{NGT=3}).}
@@ -140,6 +142,10 @@ and filtered variants.}
 operations here are chunked; heavy parallelism occurs upstream/downstream.)}
 
 \item{use_vep_file}{Path to existing VEP annotation file to use}
+
+\item{AF_in_percent}{Force convert AF from 0-100 scale to 0-1 scale}
+
+\item{cell_filter}{A vector of barcodes/cell_IDs to include}
 }
 \description{
 Find variants enriched in one or more annotated cell types from a Tapestri

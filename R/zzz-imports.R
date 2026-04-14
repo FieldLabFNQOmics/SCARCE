@@ -5,8 +5,8 @@
 
 #' @importFrom methods as
 #' @importFrom utils URLdecode capture.output head tail modifyList
-#' @importFrom stats dist hclust fisher.test na.omit p.adjust pnorm quantile setNames
-#' @importFrom grDevices colorRampPalette dev.off png
+#' @importFrom stats dist hclust fisher.test na.omit p.adjust pnorm quantile setNames cor
+#' @importFrom grDevices colorRampPalette dev.off png recordPlot
 
 #' @importFrom magrittr %>%
 #' @importFrom dplyr filter mutate group_by ungroup summarise across everything arrange desc row_number relocate left_join pull bind_cols bind_rows case_when reframe rowwise ungroup
@@ -51,6 +51,8 @@
 #' @importFrom htmlwidgets saveWidget
 #' @importFrom scales label_number
 #' @importFrom withr with_options
+#' @importFrom igraph graph_from_adjacency_matrix
+#' @importFrom graphics abline hist
 
 NULL
 

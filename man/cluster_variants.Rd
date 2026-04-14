@@ -17,7 +17,12 @@ cluster_variants(
   dbscan_eps = 0.8,
   min_data_portion = 0.8,
   rare_frequency_max = 0.02,
-  min_overlap = 10L
+  min_overlap = 10L,
+  min_alt_count = 5,
+  prune_correlated_variants = FALSE,
+  rare_var_weighting = 0.1,
+  minPts = NULL,
+  clustering_seed = NULL
 )
 }
 \arguments{
@@ -29,24 +34,34 @@ cluster_variants(
 
 \item{plot_directory}{Optional path to a directory where a UMAP plot will be saved}
 
-\item{n_features}{Target number of variants to use for clustering}
+\item{n_features}{Target number of variants to use for clustering (Default = 100)}
 
 \item{sample_ID}{Sample identifier to be added to seurat object}
 
-\item{n_neighbors}{Passed to uwot::umap}
+\item{n_neighbors}{Passed to uwot::umap (Default = 30)}
 
-\item{min_dist}{Passed to uwot::umap}
+\item{min_dist}{Passed to uwot::umap (Default = 0.3)}
 
-\item{dist_metric}{Passed to uwot::umap}
+\item{dist_metric}{Passed to uwot::umap (Default = "euclidean")}
 
-\item{dbscan_eps}{Eps metric passed to dbscan::dbscan}
+\item{dbscan_eps}{Eps metric passed to dbscan::dbscan (Default = 0.8)}
 
-\item{min_data_portion}{Minimum data availability for filtering variants}
+\item{min_data_portion}{Minimum data availability for filtering variants (Default = 0.8)}
 
-\item{rare_frequency_max}{Max frequency threshold for selecting rare variants}
+\item{rare_frequency_max}{Max frequency threshold for selecting rare variants (Default = 0.02)}
 
 \item{min_overlap}{Minimum number of joint non-NA allele frequency values
-shared between two cells for calulcating cosine distance}
+shared between two cells for calulcating cosine distance (Default = 10)}
+
+\item{min_alt_count}{Minimum number of cells carrying a mutation for it to be included for clustering (Default = 5)}
+
+\item{prune_correlated_variants}{Filter out selected variants highly correlated with each other (Experimental) (Default = FALSE)}
+
+\item{rare_var_weighting}{Proportion of clustering features that should be rare variants (Default = 0.1)}
+
+\item{minPts}{minPts metric passed to dbscan::dbscan (Default = NULL)}
+
+\item{clustering_seed}{Seed used for DBSCAN clustering (Default = NULL)}
 }
 \value{
 Seurat object
