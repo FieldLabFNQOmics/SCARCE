@@ -19,6 +19,7 @@
 #'   prefix/suffix is auto-trimmed if needed.
 #' @param out_dir Output directory for all result files.
 #' @param file_prefix Prefix used to name output files (e.g., `"<prefix>_summary.tsv"`).
+#' @param cell_filter A vector of barcodes/cell_IDs to include
 #' @param skip_vep Logical; if `TRUE`, skip VEP annotation and priority variant
 #'   detection. Disables `priority_only` filtering.
 #' @param priority_only Logical; if `TRUE`, restrict downstream outputs to variants
@@ -29,6 +30,7 @@
 #'   calls failing are masked (`AF=NA`, `NGT=3`).
 #' @param min_GQ_per_call Minimum genotype quality (GQ) for a per-cell genotype to be
 #'   considered; calls failing are masked (`AF=NA`, `NGT=3`).
+#' @param min_DP_per_call Minimum depth (DP) for a per-cell genotype to be considered
 #'
 #' @param min_varcount_total Minimum number of mutant cells (NGT %in% 1,2) across all cells.
 #' @param min_varportion_total Minimum fraction of mutant among informative cells
@@ -73,6 +75,7 @@
 #' @param threads Number of threads to use where parallelism is available. (Most
 #'   operations here are chunked; heavy parallelism occurs upstream/downstream.)
 #' @param use_vep_file Path to existing VEP annotation file to use
+#' @param AF_in_percent Force convert AF from 0-100 scale to 0-1 scale
 #' @export
 
 find_somatic_variants <- function(h5_in=NULL,
@@ -96,6 +99,7 @@ find_somatic_variants <- function(h5_in=NULL,
                                   min_datacount_total       = 100,
                                   min_dataportion_total     = 0.25,
                                   min_quality_mean_total    = 0.3,
+                                  min_depth_mean_total      = 5,
                                   min_allelefreq_mean_total = 0,
                                   min_allelefreq_mean_mutants = 0.1,
                                   rare_cutoff = 0.02,
@@ -110,12 +114,15 @@ find_somatic_variants <- function(h5_in=NULL,
                                   zscore_cutoff     = 0,
                                   # Sorting options
                                   celltype_sort_value = "p",
+                                  # other
                                   overwrite_variant_summary=TRUE,
                                   overwrite_celltype_enrichment=TRUE,
                                   run_cell_type_enrichment=TRUE,
                                   genome_version="hg19",
                                   threads=4,
-                                  use_vep_file=NULL
+                                  use_vep_file=NULL,
+                                  AF_in_percent=NULL,
+                                  cell_filter=NULL
                           ) {
 
   if(is.null(cell_annotations) & run_cell_type_enrichment){
@@ -202,15 +209,11 @@ find_somatic_variants <- function(h5_in=NULL,
   
   if(!is.null(vcf_in)){
     hdr <- scanVcfHeader(vcf_in)
-    # genome version
-    #  find_ref_genome <- meta(hdr)$reference
-    #  if(is.null(find_ref_genome)){
-    #    find_ref_genome <- meta(hdr)$contig 
-    #  }
-    barcodes <- samples(hdr)
-    
+    barcodes_full <- samples(hdr)
+    barcodes <- barcodes_full
   }else if(!is.null(h5_in)){
-    barcodes <- as.vector(rhdf5::h5read(h5_in, "/assays/dna_variants/ra/barcode"))
+    barcodes_full <- as.vector(rhdf5::h5read(h5_in, "/assays/dna_variants/ra/barcode"))
+    barcodes <- barcodes_full
   }
     
   if(!is.null(cell_annotations)){
@@ -250,6 +253,20 @@ find_somatic_variants <- function(h5_in=NULL,
       }
     }
   }
+  
+  if(!is.null(cell_filter)){
+    if(!all(cell_filter %in% names(cell_annotations))){
+      stop("cell_filter vector must match cell names/barcodes in cell_annotations")
+    }
+    keep_cells <- which(names(cell_annotations) %in% cell_filter)
+  } else {
+    keep_cells <- seq_along(barcodes)
+  }
+  
+  barcodes <- barcodes[keep_cells]
+  cell_annotations <- cell_annotations[keep_cells]
+  
+  
   ##############################################################
   # ------------------- Normalise Variants ------------------- #
   ##############################################################
@@ -509,6 +526,14 @@ find_somatic_variants <- function(h5_in=NULL,
       
       NGTb <- .pull_expanded_ngt_from_vcf(v)[keep_rows,,drop=FALSE]
       
+      dimnames(AFb) <- dimnames(trueDPb) <- dimnames(GQb) <- dimnames(NGTb) <- list(NULL, barcodes_full)
+      
+      
+      AFb     <- AFb[, keep_cells, drop = FALSE]
+      trueDPb <- trueDPb[, keep_cells, drop = FALSE]
+      GQb     <- GQb[, keep_cells, drop = FALSE]
+      NGTb    <- NGTb[, keep_cells, drop = FALSE]
+      
       dimnames(AFb) <- dimnames(trueDPb) <- dimnames(GQb) <- dimnames(NGTb) <- list(NULL, barcodes)
       
       # Apply per-call filters
@@ -519,7 +544,7 @@ find_somatic_variants <- function(h5_in=NULL,
       NGTb[!pass_call] <- 3L
       
       # calculate variant-level stats
-      var_stats <- .calculate_variant_level_stats(NGT = NGTb,AF = AFb, GQ = GQb)
+      var_stats <- .calculate_variant_level_stats(NGT = NGTb,AF = AFb, GQ = GQb, DP = trueDPb)
       
       # assemble lines
       block_summary <- block_variants %>%
@@ -537,6 +562,7 @@ find_somatic_variants <- function(h5_in=NULL,
               "min_datacount_total"     = data_cnt_total       < min_datacount_total,
               "min_dataportion_total"   = data_proportion_total< min_dataportion_total,
               "min_quality_mean_total"  = mean_GQ_total        < min_quality_mean_total,
+              "min_depth_mean_total"    = mean_DP_total        < min_depth_mean_total,
               "min_allelefreq_mean_total" = mean_AF_total      < min_allelefreq_mean_total,
               "min_allelefreq_mean_mutants" = mean_AF_mutants  < min_allelefreq_mean_mutants
             )
@@ -669,21 +695,28 @@ find_somatic_variants <- function(h5_in=NULL,
     ds_GQ  <- "/assays/dna_variants/layers/GQ"
     ds_NGT <- "/assays/dna_variants/layers/NGT"
     
-    AF_raw <- HDF5Array(h5_in, ds_AF)[keep_idx, ]
-    DP     <- HDF5Array(h5_in, ds_DP)[keep_idx, ]
-    GQ     <- HDF5Array(h5_in, ds_GQ)[keep_idx, ]
-    NGT    <- HDF5Array(h5_in, ds_NGT)[keep_idx, ]
+    AF_raw <- HDF5Array(h5_in, ds_AF)[keep_idx, keep_cells, drop = FALSE]
+    DP     <- HDF5Array(h5_in, ds_DP)[keep_idx, keep_cells, drop = FALSE]
+    GQ     <- HDF5Array(h5_in, ds_GQ)[keep_idx, keep_cells, drop = FALSE]
+    NGT    <- HDF5Array(h5_in, ds_NGT)[keep_idx, keep_cells, drop = FALSE]
     
     nr <- nrow(variants)
     nc <- ncol(variants)
     
     dimnames(AF_raw) <- dimnames(DP) <- dimnames(GQ) <- dimnames(NGT) <- list(NULL, barcodes)
     
-    # Probe AF to find scale
-    probe_rows <- seq_len(min(16L, nr))
-    probe_cols <- seq_len(min(32L, nc))
-    af_probe   <- as.matrix(AF_raw[probe_rows, probe_cols, drop = FALSE])
-    af_in_percent <- any(is.finite(af_probe) & af_probe > 1)
+    
+    if(is.null(AF_in_percent)){
+      # Probe AF to find scale
+      probe_rows <- seq_len(min(500, nr))
+      probe_cols <- seq_len(min(500, nc))
+      af_probe   <- as.matrix(AF_raw[probe_rows, probe_cols, drop = FALSE])
+      af_in_percent <- any(is.finite(af_probe) & af_probe > 1)
+    }else{
+      af_in_percent=AF_in_percent
+    }
+    
+    
     
     # work in blocks for memory efficiency
     message(paste0("Found ", nr, " variants"))
@@ -706,6 +739,13 @@ find_somatic_variants <- function(h5_in=NULL,
       GQb     <- as.matrix(GQ[rows, , drop = FALSE])
       NGTb    <- as.matrix(NGT[rows, , drop = FALSE])
       
+      
+      # double check AF in percent
+      
+      if(any(is.finite(AFb) & AFb > 1)){
+        stop("ERROR: Detected AF > 1 that was missed in initial probe. Please set AF_in_percent=TRUE")
+      }
+      
       # Apply per-call filters
       
       pass_call <- (DPb >= min_DP_per_call) & (GQb >= min_GQ_per_call)
@@ -713,7 +753,7 @@ find_somatic_variants <- function(h5_in=NULL,
       GQb[!pass_call] <- NA_real_
       NGTb[!pass_call] <- 3L
       
-      var_stats <- .calculate_variant_level_stats(NGT = NGTb,AF = AFb, GQ = GQb)
+      var_stats <- .calculate_variant_level_stats(NGT = NGTb,AF = AFb, GQ = GQb, DP = DPb)
       
       # assemble lines
       block_summary <- block_variants %>%
@@ -731,6 +771,7 @@ find_somatic_variants <- function(h5_in=NULL,
               "min_datacount_total"     = data_cnt_total       < min_datacount_total,
               "min_dataportion_total"   = data_proportion_total< min_dataportion_total,
               "min_quality_mean_total"  = mean_GQ_total        < min_quality_mean_total,
+              "min_depth_mean_total"    = mean_DP_total        < min_depth_mean_total,
               "min_allelefreq_mean_total" = mean_AF_total      < min_allelefreq_mean_total,
               "min_allelefreq_mean_mutants" = mean_AF_mutants  < min_allelefreq_mean_mutants
             )
@@ -884,7 +925,7 @@ find_somatic_variants <- function(h5_in=NULL,
       # adjust p-values only on passing variants
       full_results[, padj := NA_real_]
       if (any(tested_idx)) {
-        full_results$padj[tested_idx] <- p.adjust(full_results$p[tested_idx], method = "BH")
+        full_results$padj[tested_idx] <- p.adjust(full_results$p[tested_idx], method = "BY")
       }
       
       
@@ -1096,7 +1137,7 @@ find_somatic_variants <- function(h5_in=NULL,
   NGT
 }
 
-.calculate_variant_level_stats <- function(NGT,AF,GQ) {
+.calculate_variant_level_stats <- function(NGT,AF,GQ,DP) {
   nc=ncol(NGT)
   # Totals across all cells (for "other" computations)
   alt_cnt_total  <- rowSums(NGT == 1L | NGT == 2L, na.rm = TRUE) # how many cells carry alt allele
@@ -1129,7 +1170,12 @@ find_somatic_variants <- function(h5_in=NULL,
   GQuse[!mask] <- NA_real_
   mean_GQ_total <- rowMeans(GQuse, na.rm = TRUE)
   
+  # DP mean 
+  DP[!mask] <- NA_real_
+  mean_DP_total <- rowMeans(DP, na.rm = TRUE)
+  
   out <- data.frame(
+    mean_DP_total,
     mean_GQ_total,
     mean_AF_total,
     median_AF_total,
