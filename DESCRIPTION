@@ -25,6 +25,7 @@ Imports:
     ggplot2,
     HDF5Array,
     htmlwidgets,
+    igraph,
     magrittr,
     Matrix,
     matrixStats,

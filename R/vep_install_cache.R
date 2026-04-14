@@ -85,3 +85,31 @@ vep_install_cache <- function(species = .get_cfg()$species,
   }
   invisible(TRUE)
 }
+
+vep_has_cache <- function(cache_dir = .get_cfg()$cache_dir,
+                          species   = .get_cfg()$species,
+                          assembly  = .get_cfg()$assembly,
+                          cache_version = NULL){
+  p <- .vep_cache_path(cache_dir, species, assembly, cache_version)
+  if (is.null(p) || !dir.exists(p)) return(FALSE)
+  # A couple of expected items: annotation gz files or 'Plugins' dir, 'info.txt', etc.
+  any(file.exists(file.path(p, "info.txt"))) ||
+    length(list.files(p, pattern = "\\.(gz|fa|fa.gz|zip)$", full.names = TRUE)) > 0 ||
+    dir.exists(file.path(cache_dir, "Plugins"))
+}
+
+.vep_cache_path <- function(cache_dir, species, assembly, cache_version = NULL){
+  # VEP cache layout typically: ~/.vep/<species>/<version>_<assembly>/
+  species <- tolower(species)
+  if (is.null(cache_version)) {
+    # accept any version: pick the first dir that ends with _<assembly>
+    sp_dir <- file.path(cache_dir, species)
+    if (!dir.exists(sp_dir)) return(NULL)
+    entries <- list.dirs(sp_dir, full.names = TRUE, recursive = FALSE)
+    hits <- entries[grepl(paste0("_[[:alnum:]]*", assembly, "$"), basename(entries))]
+    if (length(hits)) hits[[1]] else NULL
+  } else {
+    file.path(cache_dir, species, paste0(cache_version, "_", assembly))
+  }
+}
+
