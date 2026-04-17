@@ -16,7 +16,7 @@
 #' @importFrom rlang .data sym
 #' @importFrom foreach %do% foreach
 
-#' @importFrom ggplot2 ggplot aes geom_point geom_bar geom_text position_stack coord_equal geom_histogram
+#' @importFrom ggplot2 ggplot aes geom_point geom_bar geom_text position_stack coord_equal geom_histogram position_dodge
 #' @importFrom ggplot2 guides guide_legend theme theme_bw theme_classic element_text labs
 #' @importFrom ggplot2 scale_color_manual scale_colour_gradient2 scale_color_discrete scale_fill_manual scale_y_continuous ggtitle ggsave
 #' @importFrom patchwork wrap_plots plot_annotation
