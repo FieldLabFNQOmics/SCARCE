@@ -39,7 +39,7 @@
 #' @importFrom Matrix Matrix
 
 #' @importFrom VariantAnnotation scanVcfHeader samples ScanVcfParam readVcf expand geno ref alt
-#' @importFrom Rsamtools TabixFile
+#' @importFrom Rsamtools TabixFile isOpen
 #' @importFrom SummarizedExperiment rowRanges
 #' @importFrom GenomicRanges start
 #' @importFrom GenomeInfoDb seqnames
