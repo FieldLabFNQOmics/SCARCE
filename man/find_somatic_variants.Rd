@@ -43,7 +43,8 @@ find_somatic_variants(
   threads = 4,
   use_vep_file = NULL,
   AF_in_percent = NULL,
-  cell_filter = NULL
+  cell_filter = NULL,
+  p_adjust_method = "BY"
 )
 }
 \arguments{
@@ -146,6 +147,8 @@ operations here are chunked; heavy parallelism occurs upstream/downstream.)}
 \item{AF_in_percent}{Force convert AF from 0-100 scale to 0-1 scale}
 
 \item{cell_filter}{A vector of barcodes/cell_IDs to include}
+
+\item{p_adjust_method}{P adjustment method passed to stats::p.adjust.}
 }
 \description{
 Find variants enriched in one or more annotated cell types from a Tapestri

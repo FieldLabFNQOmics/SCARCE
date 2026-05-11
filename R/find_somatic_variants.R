@@ -76,6 +76,7 @@
 #'   operations here are chunked; heavy parallelism occurs upstream/downstream.)
 #' @param use_vep_file Path to existing VEP annotation file to use
 #' @param AF_in_percent Force convert AF from 0-100 scale to 0-1 scale
+#' @param p_adjust_method P adjustment method passed to stats::p.adjust. 
 #' @export
 
 find_somatic_variants <- function(h5_in=NULL,
@@ -122,7 +123,8 @@ find_somatic_variants <- function(h5_in=NULL,
                                   threads=4,
                                   use_vep_file=NULL,
                                   AF_in_percent=NULL,
-                                  cell_filter=NULL
+                                  cell_filter=NULL,
+                                  p_adjust_method="BY"
                           ) {
 
   if(is.null(cell_annotations) & run_cell_type_enrichment){
@@ -925,7 +927,7 @@ find_somatic_variants <- function(h5_in=NULL,
       # adjust p-values only on passing variants
       full_results[, padj := NA_real_]
       if (any(tested_idx)) {
-        full_results$padj[tested_idx] <- p.adjust(full_results$p[tested_idx], method = "BY")
+        full_results$padj[tested_idx] <- p.adjust(full_results$p[tested_idx], method = p_adjust_method)
       }
       
       
