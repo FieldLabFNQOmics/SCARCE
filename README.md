@@ -337,3 +337,75 @@ plot_variants(seurat_obj = seurat,
 ```
 
 ------------------------------------------------------------------------
+
+## Output Files
+
+SCARCE generates several output files in the user-specified results directory.
+- Summary statistics per variant:
+  - {prefix}_summary.tsv
+  - {prefix}_summary_pass_only.tsv
+  - {prefix}_summary_pass_only_priority.tsv
+- Variant enrichment statistics for each cell type/cluster number:
+  - {prefix}_{cell_type}.tsv
+  - {prefix}_{cell_type}_pass_only.tsv
+  - {prefix}_{cell_type}_pass_only_priority.tsv
+- The number of cells from each cell type carrying a variant allele:
+  - {prefix}_variant_counts_per_celltype.tsv
+- Matrix of genotype information per cell (FORMAT=Allele Frequency;Depth;Genotype Quality;Numeric Genotype):
+  - {prefix}_genotypes.tsv
+  - 
+\*Note: Numeric Genotype (NGT) counts the number of alternate alleles. Thus, 0=0/0, 1=1/0 or 0/1, 2=1/1, 3=No Genotype Information
+
+The column header for the summary statistics and variant enrichment statistics is described below:
+
+| Column Name | Description |
+| :---------- | :---------- |
+| chromosome | Chromosome
+| start_position | Start Position
+| end_position | End Position
+| reference_allele | Reference Allele
+| alternate_allele | Alternate Allele
+| variant_type | Variant Type
+| variant | Variant ID
+| plot_ID | Variant ID used for plotting
+| SYMBOL | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| Gene | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| Feature | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| HGVSp | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| MAX_AF | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| Consequence | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| Existing_variation | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| BIOTYPE SIFT | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| PolyPhen | [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?)
+| priority_flag | Determined from [VEP annotation](https://asia.ensembl.org/info/docs/tools/vep/vep_formats.html?) "Consequence" and rare_cutoff
+| mean_DP_total | Mean depth across all cells
+| mean_GQ_total | mean GQ across all cells
+| mean_AF_total | mean AF across all cells
+| median_AF_total | median AF across all cells
+| alt_cnt_total | n cells with alt allele across all cells
+| ref_cnt_total | n cells with no alt allele across all cells
+| data_cnt_total | n cells with NGT !=3 across all cells
+| alt_proportion_total | proportion cells with alt allele across all cells
+| data_proportion_total | proportion with NGT !=3 across all cells
+| mean_AF_mutants | mean AF in cells with NGT in 1,2
+| median_AF_mutants | median AF in cells with NGT in 1,2
+| filter | String describing filter calls
+| alt_cnt_ct | n cells with alt allele in cell type
+| het_cnt_ct | n het cells in cell type
+| hom_cnt_ct | n hom cells in cell type
+| ref_cnt_ct | n ref cells in cell type
+| data_cnt_ct | n cells with NGT !=3 in cell type
+| alt_proportion_ct | proportion cell type cells with alt allele (denominator is all cells in cell type)
+| alt_proportion_in_ct | proportion of alt cells in cell type (denominator is all cells with mutation)
+| alt_cnt_other | n cells with alt allele not in cell type
+| ref_cnt_other | n ref cells not in cell type
+| data_cnt_other | n cells with NGT !=3 not in cell type
+| alt_proportion_other | proportion of cells not in cell type with alt allele
+| OR | Odds ratio
+| ci_low | Odds ratio confidence intervals
+| ci_high | Odds ratio confidence intervals
+| Z_score | Odds ratio z score
+| p_wald | p value from Wald test
+| p_fisher | p value from Fisher test
+| p | Wald or Fisher p value (whichever was used)
+| padj | Adjusted p value
