@@ -223,7 +223,8 @@ plot_variants <- function(
       c <- str_extract(file, pattern = paste0(file_prefix,"_(.*).*.tsv"), group = 1)
       v <- fread(file, col.names  = names(cell_type_cols), colClasses = unname(cell_type_cols)) %>%
         mutate(cell_type=c) %>%
-        filter(str_detect(.data[[search_col]], paste(search, collapse = "|")))
+        filter(str_detect(.data[[search_col]], 
+                          stringr::regex(paste(stringr::str_escape(search), collapse = "|"))))
       
       if (pass_only) v <- filter(v, filter==".")
       if (priority_only) v <- filter(v, priority_flag%in%c(1,"1"))
@@ -604,13 +605,14 @@ plot_variants <- function(
     png(file.path(plot_directory,paste0(plot_prefix,"_AF_heatmap.png")),
         width = plot_width, height = 2000, res = 300)
     
-    draw(ht,
+    HM <- draw(ht,
          heatmap_legend_side = "right",
          annotation_legend_side = "top",
          annotation_legend_list = list(p_legend))
     dev.off()
     
     return_plot_list[["HM_data"]] <- HM_data
+    return_plot_list[["Heatmap"]] <- HM
     
     message(paste0("Saved allele frequency heatmap to ", file.path(plot_directory,paste0(plot_prefix,"_AF_heatmap.png"))))
   

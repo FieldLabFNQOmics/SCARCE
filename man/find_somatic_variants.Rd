@@ -15,6 +15,7 @@ find_somatic_variants(
   file_prefix,
   skip_vep = F,
   priority_only = F,
+  pass_only_variants = FALSE,
   block = 1000,
   min_DP_per_call = 10,
   min_GQ_per_call = 30,
@@ -75,6 +76,9 @@ detection. Disables \code{priority_only} filtering.}
 
 \item{priority_only}{Logical; if \code{TRUE}, restrict downstream outputs to variants
 flagged as priority by VEP (rare protein-impacting). Ignored when \code{skip_vep=TRUE}.}
+
+\item{pass_only_variants}{Logical; if \code{TRUE}, restricts downstream outputs to variants
+which pass the variant-level filters to speed up processing time.}
 
 \item{block}{Integer; number of variants per processing chunk for memory efficiency.}
 

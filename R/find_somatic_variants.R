@@ -24,6 +24,8 @@
 #'   detection. Disables `priority_only` filtering.
 #' @param priority_only Logical; if `TRUE`, restrict downstream outputs to variants
 #'   flagged as priority by VEP (rare protein-impacting). Ignored when `skip_vep=TRUE`.
+#' @param pass_only_variants Logical; if `TRUE`, restricts downstream outputs to variants
+#'   which pass the variant-level filters to speed up processing time.
 #' @param block Integer; number of variants per processing chunk for memory efficiency.
 #'
 #' @param min_DP_per_call Minimum depth (DP) for a per-cell genotype to be considered;
@@ -89,6 +91,7 @@ find_somatic_variants <- function(h5_in=NULL,
                                   file_prefix,
                                   skip_vep = F,
                                   priority_only=F,
+                                  pass_only_variants=FALSE,
                                   block = 1000,
                                   # Call-Level thresholds
                                   min_DP_per_call= 10, 
@@ -460,6 +463,7 @@ find_somatic_variants <- function(h5_in=NULL,
   if(!is.null(vcf_in)){
     
     nr <- nrow(variants)
+    pass_total <- 0L
     
     tabix <- TabixFile(vcf_in, yieldSize = block)
     
@@ -573,6 +577,22 @@ find_somatic_variants <- function(h5_in=NULL,
           }
         ) %>%
         ungroup()
+      
+      if (isTRUE(pass_only_variants)) {
+        pass_idx       <- which(block_summary$filter == ".")
+        n_block        <- nrow(block_summary)
+        message(length(pass_idx), "/", n_block, " passed variant-level filters in this block")
+        pass_total <- pass_total + length(pass_idx)
+        message(pass_total, " variants passed so far...")
+        block_summary  <- block_summary[pass_idx, , drop = FALSE]
+        NGTb           <- NGTb[pass_idx, , drop = FALSE]
+        var_stats      <- var_stats[pass_idx, , drop = FALSE]
+        block_variants <- block_variants[pass_idx, , drop = FALSE]
+        AFb            <- AFb[pass_idx, , drop = FALSE]
+        trueDPb        <- trueDPb[pass_idx, , drop = FALSE]
+        GQb            <- GQb[pass_idx, , drop = FALSE]
+        if (nrow(block_summary) == 0L) next
+      }
       
       if(!priority_only){
         
@@ -690,6 +710,8 @@ find_somatic_variants <- function(h5_in=NULL,
     close(tabix)
     
   }else if(!is.null(h5_in)){
+    
+    pass_total <- 0L
     # working with HDF5Array for memory efficiency 
     
     ds_AF  <- "/assays/dna_variants/layers/AF"
@@ -782,6 +804,22 @@ find_somatic_variants <- function(h5_in=NULL,
           }
         ) %>%
         ungroup()
+      
+      if (isTRUE(pass_only_variants)) {
+        pass_idx       <- which(block_summary$filter == ".")
+        n_block        <- nrow(block_summary)
+        message(length(pass_idx), "/", n_block, " passed variant-level filters in this block")
+        pass_total <- pass_total + length(pass_idx)
+        message(pass_total, " variants passed so far...")
+        block_summary  <- block_summary[pass_idx, , drop = FALSE]
+        NGTb           <- NGTb[pass_idx, , drop = FALSE]
+        var_stats      <- var_stats[pass_idx, , drop = FALSE]
+        block_variants <- block_variants[pass_idx, , drop = FALSE]
+        AFb            <- AFb[pass_idx, , drop = FALSE]
+        DPb            <- DPb[pass_idx, , drop = FALSE]
+        GQb            <- GQb[pass_idx, , drop = FALSE]
+        if (nrow(block_summary) == 0L) { first_block <- FALSE; next }
+      }
       
       if(!priority_only){
         
