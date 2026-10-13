@@ -6,13 +6,20 @@
 \usage{
 prepare_annotation_data(
   input_file = NULL,
+  data_type = "Tapestri_ADT",
   sample_ID = NULL,
   cluster_resolutions = c(0.2, 0.35, 0.5, 0.8, 1, 1.2),
   save_directory = NULL,
   qc_plot_directory = NULL,
   variance_quantile = 0.25,
   neighbor_metric = "euclidean",
-  k_param = 50
+  k_param = 50,
+  filter = TRUE,
+  mito_pattern = "^MT-",
+  nfeatures = 2000,
+  min_features = 200,
+  max_mito_pct = 20,
+  convert_ENSEMBL_to_HGNC = FALSE
 )
 }
 \arguments{
