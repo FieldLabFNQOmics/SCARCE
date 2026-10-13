@@ -138,9 +138,9 @@ plot_variants <- function(
   genotype_fmt_line <- readLines(file.path(result_dir,genotype_file), n = 1L)
   genotype_format_fields <- strsplit(gsub("^#FORMAT=", "", genotype_fmt_line), ";", fixed = TRUE)[[1]]
   genotype_cols <- .get_col_schema(file.path(result_dir,genotype_file), 1000)
-  
-  cell_type_files <- all_files[!grepl("summary|vep|genotypes|variant_counts_per_celltype",all_files)]
-  cell_type_files <- cell_type_files[grep(".tsv$",cell_type_files)]
+
+  suffixes <- sub(paste0("^", stringr::str_escape(file_prefix)), "", all_files)
+  cell_type_files <- all_files[!grepl("summary|vep|genotypes|variant_counts_per_celltype", suffixes)]
   
   #if(priority_only){
   #  summary_file <- all_files[grep("_summary_pass_only_priority.tsv", all_files)]
@@ -704,69 +704,73 @@ plot_variants <- function(
         
         plots <- foreach(feature=plot_features) %do% {
           type <- str_extract(feature, "^([^_]+)_", group = 1)
-          if (!is.na(type) && type == "NGT") {
-            
-            seurat_obj[[feature]] <- factor(
-              as.vector(seurat_obj[[feature]])[[1]],
-              levels = c(3,0,1,2),
-              labels = c("Unavailable","WT","HET","HOM")
-            )
-            p <- DimPlot(
-              seurat_obj, reduction = umap_reduction, group.by = feature,
-              pt.size   = 0.8, alpha = 0.9
-            ) + ggplot2::ggtitle(paste0(v)) +
-              scale_color_manual(
-                name   = "NGT",
-                values = c(WT="#6baed6", HET="#EDE953", HOM="#E03512", Unavailable="lightgrey"),
-                limits = c("WT","HET","HOM","Unavailable"),
-                drop   = FALSE
-              ) +
-              theme(plot.title = element_text(size = umap_plot_title_size),
-                    legend.title = element_text(size = umap_legend_title_size),
-                    legend.text = element_text(size=umap_legend_label_size),
-                    axis.title = element_text(size = umap_axis_title_size),
-                    axis.text = element_text(size = umap_axis_lables_size)
-              ) +
-              guides(fill="none")
-            
-            # dealing with issue generating multiple legends
-            if(v!=names(variants)[1]){
-              p <- p + guides(colour="none")
-            }
-            
-          }else if(!is.na(type) && type == "GQ"){
-            p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
-                                    ggplot2::ggtitle(paste0(type,": ", v)) +
-                                    scale_colour_gradient2(type, 
-                                                           limits = c(0,100), 
-                                                           breaks = c(0,50,100), 
-                                                           low = "#E03512", mid= "#EDE953",high = "#38ab4d",
-                                                           midpoint = 50,
-                                                           oob = scales::squish, na.value = "lightgrey") +
-                                    theme(plot.title = element_text(size = umap_plot_title_size),
-                                          legend.title = element_text(size = umap_legend_title_size),
-                                          legend.text = element_text(size=umap_legend_label_size),
-                                          axis.title = element_text(size = umap_axis_title_size),
-                                          axis.text = element_text(size = umap_axis_lables_size)
-                                    )
-            )
-            
-          }else{
-            p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
-              ggplot2::ggtitle(paste0(type,": ", v)) +
-              scale_colour_gradient2(type, 
-                                     limits = c(0,1), 
-                                     breaks = c(0,0.5,1), 
-                                     low = "#6baed6", mid= "#EDE953",high = "#E03512",
-                                     midpoint = 0.5,
-                                     oob = scales::squish, na.value = "lightgrey") +
-              theme(plot.title = element_text(size = umap_plot_title_size),
-                    legend.title = element_text(size = umap_legend_title_size),
-                    legend.text = element_text(size=umap_legend_label_size),
-                    axis.title = element_text(size = umap_axis_title_size),
-                    axis.text = element_text(size = umap_axis_lables_size)
-                    )
+          if (all(is.na(seurat_obj@meta.data[[feature]]))) {
+            p <- NULL
+          } else {
+            if (!is.na(type) && type == "NGT") {
+              
+              seurat_obj[[feature]] <- factor(
+                as.vector(seurat_obj[[feature]])[[1]],
+                levels = c(3,0,1,2),
+                labels = c("Unavailable","WT","HET","HOM")
               )
+              p <- DimPlot(
+                seurat_obj, reduction = umap_reduction, group.by = feature,
+                pt.size   = 0.8, alpha = 0.9
+              ) + ggplot2::ggtitle(paste0(v)) +
+                scale_color_manual(
+                  name   = "NGT",
+                  values = c(WT="#6baed6", HET="#EDE953", HOM="#E03512", Unavailable="lightgrey"),
+                  limits = c("WT","HET","HOM","Unavailable"),
+                  drop   = FALSE
+                ) +
+                theme(plot.title = element_text(size = umap_plot_title_size),
+                      legend.title = element_text(size = umap_legend_title_size),
+                      legend.text = element_text(size=umap_legend_label_size),
+                      axis.title = element_text(size = umap_axis_title_size),
+                      axis.text = element_text(size = umap_axis_lables_size)
+                ) +
+                guides(fill="none")
+              
+              # dealing with issue generating multiple legends
+              if(v!=names(variants)[1]){
+                p <- p + guides(colour="none")
+              }
+              
+            }else if(!is.na(type) && type == "GQ"){
+              p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
+                                      ggplot2::ggtitle(paste0(type,": ", v)) +
+                                      scale_colour_gradient2(type, 
+                                                            limits = c(0,100), 
+                                                            breaks = c(0,50,100), 
+                                                            low = "#E03512", mid= "#EDE953",high = "#38ab4d",
+                                                            midpoint = 50,
+                                                            oob = scales::squish, na.value = "lightgrey") +
+                                      theme(plot.title = element_text(size = umap_plot_title_size),
+                                            legend.title = element_text(size = umap_legend_title_size),
+                                            legend.text = element_text(size=umap_legend_label_size),
+                                            axis.title = element_text(size = umap_axis_title_size),
+                                            axis.text = element_text(size = umap_axis_lables_size)
+                                      )
+              )
+              
+            }else{
+              p <- suppressMessages(FeaturePlot(seurat_obj, features = feature, reduction = umap_reduction, order = TRUE, pt.size = 0.8 ) +
+                ggplot2::ggtitle(paste0(type,": ", v)) +
+                scale_colour_gradient2(type, 
+                                      limits = c(0,1), 
+                                      breaks = c(0,0.5,1), 
+                                      low = "#6baed6", mid= "#EDE953",high = "#E03512",
+                                      midpoint = 0.5,
+                                      oob = scales::squish, na.value = "lightgrey") +
+                theme(plot.title = element_text(size = umap_plot_title_size),
+                      legend.title = element_text(size = umap_legend_title_size),
+                      legend.text = element_text(size=umap_legend_label_size),
+                      axis.title = element_text(size = umap_axis_title_size),
+                      axis.text = element_text(size = umap_axis_lables_size)
+                      )
+                )
+            }
           }
           p
           
@@ -812,10 +816,11 @@ plot_variants <- function(
       GQ_plots <- .assemble_feature_grid(variant_plot_list=umap_plots, feature = "GQ", 
                                          reference_umap=if(include_UMAP_ref) annotated_umap else NULL, 
                                          ncol = if(length(variants) < 3) length(variants) else 3)
-      ggsave(plot = GQ_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_GQ.png")),  width = 40, height = plot_height, units = "cm")
-      message(paste0("Saved genotype quality UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_GQ.png")))
-      
-      return_plot_list[["GQ_UMAP"]] <- GQ_plots
+      if (!is.null(GQ_plots)) {
+        ggsave(plot = GQ_plots, file.path(plot_directory,paste0(plot_prefix,"_umap_variants_GQ.png")),  width = 40, height = plot_height, units = "cm")
+        message(paste0("Saved genotype quality UMAP plot to "), file.path(plot_directory,paste0(plot_prefix,"_umap_variants_GQ.png")))
+        return_plot_list[["GQ_UMAP"]] <- GQ_plots
+      }
     }
   }
   ###############
@@ -904,7 +909,10 @@ plot_variants <- function(
   
   # drop missing
   plots <- plots[!vapply(plots, is.null, logical(1))]
-  if (!length(plots)) stop("No plots found for feature '", feature, "'.")
+  if (!length(plots)){
+    message("No plots found for feature '", feature, "'.")
+    return(NULL)
+  } 
   
   
   # assemble patchwork grid

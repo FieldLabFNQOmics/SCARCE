@@ -270,6 +270,7 @@ find_somatic_variants <- function(h5_in=NULL,
   
   barcodes <- barcodes[keep_cells]
   cell_annotations <- cell_annotations[keep_cells]
+  ct_idx <- split(seq_along(cell_annotations), cell_annotations)
   
   
   ##############################################################
@@ -464,6 +465,11 @@ find_somatic_variants <- function(h5_in=NULL,
     
     nr <- nrow(variants)
     pass_total <- 0L
+
+    hdr <- scanVcfHeader(vcf_in)
+    ad_is_scalar <- geno(hdr)["AD","Number"] == "1"
+    has_GQ <- "GQ" %in% rownames(geno(hdr))
+    geno_fields <- c("AD","DP","GT", if (has_GQ) "GQ")
     
     tabix <- TabixFile(vcf_in, yieldSize = block)
     
@@ -474,7 +480,7 @@ find_somatic_variants <- function(h5_in=NULL,
     param <- ScanVcfParam(
       fixed = c("ALT"),
       info = NA,     
-      geno = c("AD","DP","GQ","GT")
+      geno = geno_fields
     )
     
     open(tabix)
@@ -515,18 +521,31 @@ find_somatic_variants <- function(h5_in=NULL,
       # get variant data for the block
       block_variants <- variants[variant_rows, , drop = FALSE]
       
-      # read in AD array and split to ref/alt matrices
-      ADb <- geno(vcf)$AD[keep_rows,,1:2,drop=FALSE]
-      ADb_ref <- ADb[,,1, drop=FALSE]
-      dim(ADb_ref) <- dim(ADb)[1:2]
-      ADb_alt <- ADb[,,2, drop=FALSE]
-      dim(ADb_alt) <- dim(ADb)[1:2]
-      # calculate DP from AD ref+alt
-      trueDPb <- ADb_ref + ADb_alt
-      # calculate AF
-      AFb <- ADb_alt/trueDPb
+      if (ad_is_scalar) {
+        ADb_alt <- geno(vcf)$AD[keep_rows,,drop=FALSE]
+        trueDPb <- geno(vcf)$DP[keep_rows,,drop=FALSE]
+        AFb <- ADb_alt/trueDPb
+      } else {
+        # read in AD array and split to ref/alt matrices
+        ADb <- geno(vcf)$AD[keep_rows,,1:2,drop=FALSE]
+        ADb_ref <- ADb[,,1, drop=FALSE]
+        dim(ADb_ref) <- dim(ADb)[1:2]
+        ADb_alt <- ADb[,,2, drop=FALSE]
+        dim(ADb_alt) <- dim(ADb)[1:2]
+        # calculate DP from AD ref+alt
+        trueDPb <- ADb_ref + ADb_alt
+        # calculate AF
+        AFb <- ADb_alt/trueDPb
+      }
+
+
       # read in GQ
-      GQb <- geno(vcf)$GQ[keep_rows,,drop=FALSE]
+      if (has_GQ) {
+        GQb <- geno(vcf)$GQ[keep_rows,,drop=FALSE]
+      } else {
+        GQb <- matrix(NA_real_, nrow = length(keep_rows), ncol = length(barcodes_full))
+      }
+
       # read in GT
       GTb <- geno(vcf)$GT[keep_rows,,drop=FALSE]
       
@@ -543,40 +562,49 @@ find_somatic_variants <- function(h5_in=NULL,
       dimnames(AFb) <- dimnames(trueDPb) <- dimnames(GQb) <- dimnames(NGTb) <- list(NULL, barcodes)
       
       # Apply per-call filters
-      
-      pass_call <- (trueDPb >= min_DP_per_call) & (GQb >= min_GQ_per_call)
+      if (!has_GQ){
+          message("Warning: min_GQ_per_call and min_quality_mean_total are being ignored because vcf_in does not contain GQ field")
+          min_quality_mean_total <- -Inf
+      }
+      pass_call <- (trueDPb >= min_DP_per_call) & (if (has_GQ) GQb >= min_GQ_per_call else TRUE)
       AFb[!pass_call] <- NA_real_
       GQb[!pass_call] <- NA_real_
       NGTb[!pass_call] <- 3L
       
       # calculate variant-level stats
       var_stats <- .calculate_variant_level_stats(NGT = NGTb,AF = AFb, GQ = GQb, DP = trueDPb)
+
+      filter_counts <- c(
+        min_varcount_total           = sum(var_stats$alt_cnt_total        < min_varcount_total, na.rm = TRUE),
+        min_varportion_total         = sum(var_stats$alt_proportion_total < min_varportion_total, na.rm = TRUE),
+        max_varportion_total         = sum(var_stats$alt_proportion_total > max_varportion_total, na.rm = TRUE),
+        min_datacount_total          = sum(var_stats$data_cnt_total       < min_datacount_total, na.rm = TRUE),
+        min_dataportion_total        = sum(var_stats$data_proportion_total< min_dataportion_total, na.rm = TRUE),
+        min_quality_mean_total       = sum(var_stats$mean_GQ_total        < min_quality_mean_total, na.rm = TRUE),
+        min_depth_mean_total         = sum(var_stats$mean_DP_total        < min_depth_mean_total, na.rm = TRUE),
+        min_allelefreq_mean_total    = sum(var_stats$mean_AF_total        < min_allelefreq_mean_total, na.rm = TRUE),
+        min_allelefreq_mean_mutants  = sum(var_stats$mean_AF_mutants      < min_allelefreq_mean_mutants, na.rm = TRUE)
+      )
+
+      message("Block filter fails (n=", nrow(var_stats), "): ",
+              paste(names(filter_counts)[filter_counts > 0],
+                    filter_counts[filter_counts > 0], sep = "=", collapse = ", "))
       
       # assemble lines
-      block_summary <- block_variants %>%
-        bind_cols(
-          var_stats
-        ) %>%
-        # add filters
-        rowwise() %>%
-        mutate(
-          filter = {
-            labs <- c(
-              "min_varcount_total"      = alt_cnt_total        < min_varcount_total,
-              "min_varportion_total"    = alt_proportion_total < min_varportion_total,
-              "max_varportion_total"    = alt_proportion_total > max_varportion_total,
-              "min_datacount_total"     = data_cnt_total       < min_datacount_total,
-              "min_dataportion_total"   = data_proportion_total< min_dataportion_total,
-              "min_quality_mean_total"  = mean_GQ_total        < min_quality_mean_total,
-              "min_depth_mean_total"    = mean_DP_total        < min_depth_mean_total,
-              "min_allelefreq_mean_total" = mean_AF_total      < min_allelefreq_mean_total,
-              "min_allelefreq_mean_mutants" = mean_AF_mutants  < min_allelefreq_mean_mutants
-            )
-            out <- paste(names(which(labs)), collapse = ";")
-            if (out == "") "." else out
-          }
-        ) %>%
-        ungroup()
+
+      block_summary <- bind_cols(block_variants, var_stats)
+      block_summary$filter <- .make_filter(cbind(
+        min_varcount_total          = var_stats$alt_cnt_total        < min_varcount_total,
+        min_varportion_total        = var_stats$alt_proportion_total < min_varportion_total,
+        max_varportion_total        = var_stats$alt_proportion_total > max_varportion_total,
+        min_datacount_total         = var_stats$data_cnt_total       < min_datacount_total,
+        min_dataportion_total       = var_stats$data_proportion_total< min_dataportion_total,
+        min_quality_mean_total      = var_stats$mean_GQ_total        < min_quality_mean_total,
+        min_depth_mean_total        = var_stats$mean_DP_total        < min_depth_mean_total,
+        min_allelefreq_mean_total   = var_stats$mean_AF_total        < min_allelefreq_mean_total,
+        min_allelefreq_mean_mutants = var_stats$mean_AF_mutants      < min_allelefreq_mean_mutants
+      ))
+
       
       if (isTRUE(pass_only_variants)) {
         pass_idx       <- which(block_summary$filter == ".")
@@ -619,31 +647,19 @@ find_somatic_variants <- function(h5_in=NULL,
       
       # write counts per cell type
       if(!is.null(cell_annotations)){
-        counts_per_ct <- NGTb %>%
-          as.data.frame() %>%
-          mutate(variant_order=row_number()) %>%
-          relocate(variant_order) %>%
-          pivot_longer(-variant_order, names_to = "barcode", values_to = "NGT") %>%
-          left_join(cell_annotations %>% enframe() %>% as.data.frame() %>% setNames(c("barcode","cell_type")), by = "barcode") %>%
-          group_by(variant_order,cell_type) %>%
-          summarise(alt_count=sum(NGT%in%c(1,2), na.rm = T),
-                    data_count=sum(NGT%in%c(0,1,2), na.rm = T),
-                    .groups = "drop") %>%
-          pivot_wider(
-            id_cols = variant_order,
-            names_from = cell_type,
-            values_from = c(alt_count, data_count),
-            names_glue = "{cell_type}_{.value}",
-            values_fill = list(alt_count = 0, data_count = 0)
-          ) %>%
-          arrange(variant_order) %>%
-          dplyr::select(-variant_order)
-        
-        counts_per_ct <- bind_cols(block_variants,counts_per_ct)
-        
+        alt <- (NGTb == 1L | NGTb == 2L)
+        dat <- alt | (NGTb == 0L)
+        counts_per_ct <- do.call(cbind, lapply(names(ct_idx), function(ct) {
+          j <- ct_idx[[ct]]
+          m <- cbind(rowSums(alt[, j, drop = FALSE]), rowSums(dat[, j, drop = FALSE]))
+          colnames(m) <- paste0(ct, c("_alt_count", "_data_count"))
+          m
+        })) %>% as.data.frame()
+
+        counts_per_ct <- bind_cols(block_variants, counts_per_ct)
         write_tsv(counts_per_ct, counts_per_cell_type_file, append = TRUE, col_names = first_block)
       }
-      
+            
       
       # get per cell info
       
@@ -656,7 +672,7 @@ find_somatic_variants <- function(h5_in=NULL,
       block_per_cell_info <- block_summary %>%
         bind_cols(block_per_cell_info)
       
-      write_tsv(block_per_cell_info, genotype_file, append = TRUE, col_names = first_block)
+      data.table::fwrite(block_per_cell_info, genotype_file, sep = "\t", append = TRUE, col.names = first_block, quote = FALSE)
       
       if(run_cell_type_enrichment){
         
@@ -669,36 +685,18 @@ find_somatic_variants <- function(h5_in=NULL,
           
           ct_stats <- .calculate_cell_type_stats(NGTb,ct,cell_annotations,var_stats)
           
-          stats_block_ct <- block_summary %>%
-            bind_cols(ct_stats) %>%
-            # filtering
-            rowwise() %>%
-            mutate(
-              # Build the new, cell-type-specific filter labels
-              .new_filter_labels = {
-                labs <- c(
-                  "varcount_celltype"       = alt_cnt_ct  < min_varcount_celltype,
-                  "varportion_celltype"     = alt_proportion_ct  < min_varportion_celltype,
-                  "datacount_celltype"      = data_cnt_ct   < min_datacount_celltype,
-                  "varportion_in_celltype"  = alt_proportion_in_ct < min_varportion_in_celltype
-                )
-                out <- paste(names(which(labs)), collapse = ";")
-                if (out == "") "." else out
-              },
-              # Append to existing `filter` (which may be "." from your previous step)
-              filter = {
-                add <- .new_filter_labels
-                if (add == ".") {
-                  filter
-                } else if (filter == ".") {
-                  add
-                } else {
-                  paste0(filter, ";", add)
-                }
-              }
-            ) %>%
-            dplyr::select(-.new_filter_labels) %>%
-            ungroup()
+          stats_block_ct <- bind_cols(block_summary, ct_stats)
+
+          add <- .make_filter(cbind(
+            varcount_celltype      = ct_stats$alt_cnt_ct           < min_varcount_celltype,
+            varportion_celltype    = ct_stats$alt_proportion_ct    < min_varportion_celltype,
+            datacount_celltype     = ct_stats$data_cnt_ct          < min_datacount_celltype,
+            varportion_in_celltype = ct_stats$alt_proportion_in_ct < min_varportion_in_celltype
+          ))
+
+          f <- stats_block_ct$filter
+          stats_block_ct$filter <- ifelse(add == ".", f,
+                                    ifelse(f == ".", add, paste0(f, ";", add)))
           
           write_tsv(stats_block_ct, ct_file, append = TRUE, col_names = first_block)
           
@@ -779,31 +777,35 @@ find_somatic_variants <- function(h5_in=NULL,
       
       var_stats <- .calculate_variant_level_stats(NGT = NGTb,AF = AFb, GQ = GQb, DP = DPb)
       
+      filter_counts <- c(
+        min_varcount_total           = sum(var_stats$alt_cnt_total        < min_varcount_total, na.rm = TRUE),
+        min_varportion_total         = sum(var_stats$alt_proportion_total < min_varportion_total, na.rm = TRUE),
+        max_varportion_total         = sum(var_stats$alt_proportion_total > max_varportion_total, na.rm = TRUE),
+        min_datacount_total          = sum(var_stats$data_cnt_total       < min_datacount_total, na.rm = TRUE),
+        min_dataportion_total        = sum(var_stats$data_proportion_total< min_dataportion_total, na.rm = TRUE),
+        min_quality_mean_total       = sum(var_stats$mean_GQ_total        < min_quality_mean_total, na.rm = TRUE),
+        min_depth_mean_total         = sum(var_stats$mean_DP_total        < min_depth_mean_total, na.rm = TRUE),
+        min_allelefreq_mean_total    = sum(var_stats$mean_AF_total        < min_allelefreq_mean_total, na.rm = TRUE),
+        min_allelefreq_mean_mutants  = sum(var_stats$mean_AF_mutants      < min_allelefreq_mean_mutants, na.rm = TRUE)
+      )
+
+      message("Block filter fails (n=", nrow(var_stats), "): ",
+              paste(names(filter_counts)[filter_counts > 0],
+                    filter_counts[filter_counts > 0], sep = "=", collapse = ", "))
+
       # assemble lines
-      block_summary <- block_variants %>%
-        bind_cols(
-          var_stats
-        ) %>%
-        # add filters
-        rowwise() %>%
-        mutate(
-          filter = {
-            labs <- c(
-              "min_varcount_total"      = alt_cnt_total        < min_varcount_total,
-              "min_varportion_total"    = alt_proportion_total < min_varportion_total,
-              "max_varportion_total"    = alt_proportion_total > max_varportion_total,
-              "min_datacount_total"     = data_cnt_total       < min_datacount_total,
-              "min_dataportion_total"   = data_proportion_total< min_dataportion_total,
-              "min_quality_mean_total"  = mean_GQ_total        < min_quality_mean_total,
-              "min_depth_mean_total"    = mean_DP_total        < min_depth_mean_total,
-              "min_allelefreq_mean_total" = mean_AF_total      < min_allelefreq_mean_total,
-              "min_allelefreq_mean_mutants" = mean_AF_mutants  < min_allelefreq_mean_mutants
-            )
-            out <- paste(names(which(labs)), collapse = ";")
-            if (out == "") "." else out
-          }
-        ) %>%
-        ungroup()
+      block_summary <- bind_cols(block_variants, var_stats)
+      block_summary$filter <- .make_filter(cbind(
+        min_varcount_total          = var_stats$alt_cnt_total        < min_varcount_total,
+        min_varportion_total        = var_stats$alt_proportion_total < min_varportion_total,
+        max_varportion_total        = var_stats$alt_proportion_total > max_varportion_total,
+        min_datacount_total         = var_stats$data_cnt_total       < min_datacount_total,
+        min_dataportion_total       = var_stats$data_proportion_total< min_dataportion_total,
+        min_quality_mean_total      = var_stats$mean_GQ_total        < min_quality_mean_total,
+        min_depth_mean_total        = var_stats$mean_DP_total        < min_depth_mean_total,
+        min_allelefreq_mean_total   = var_stats$mean_AF_total        < min_allelefreq_mean_total,
+        min_allelefreq_mean_mutants = var_stats$mean_AF_mutants      < min_allelefreq_mean_mutants
+      ))
       
       if (isTRUE(pass_only_variants)) {
         pass_idx       <- which(block_summary$filter == ".")
@@ -845,28 +847,16 @@ find_somatic_variants <- function(h5_in=NULL,
       
       # write counts per cell type
       if(!is.null(cell_annotations)){
-        counts_per_ct <- NGTb %>%
-          as.data.frame() %>%
-          mutate(variant_order=row_number()) %>%
-          relocate(variant_order) %>%
-          pivot_longer(-variant_order, names_to = "barcode", values_to = "NGT") %>%
-          left_join(cell_annotations %>% enframe() %>% setNames(c("barcode","cell_type")), by = "barcode") %>%
-          group_by(variant_order,cell_type) %>%
-          summarise(alt_count=sum(NGT%in%c(1,2), na.rm = T),
-                    data_count=sum(NGT%in%c(0,1,2), na.rm = T),
-                    .groups = "drop") %>%
-          pivot_wider(
-            id_cols = variant_order,
-            names_from = cell_type,
-            values_from = c(alt_count, data_count),
-            names_glue = "{cell_type}_{.value}",
-            values_fill = list(alt_count = 0, data_count = 0)
-          ) %>%
-          arrange(variant_order) %>%
-          dplyr::select(-variant_order)
-        
-        counts_per_ct <- bind_cols(block_variants,counts_per_ct)
-        
+        alt <- (NGTb == 1L | NGTb == 2L)
+        dat <- alt | (NGTb == 0L)
+        counts_per_ct <- do.call(cbind, lapply(names(ct_idx), function(ct) {
+          j <- ct_idx[[ct]]
+          m <- cbind(rowSums(alt[, j, drop = FALSE]), rowSums(dat[, j, drop = FALSE]))
+          colnames(m) <- paste0(ct, c("_alt_count", "_data_count"))
+          m
+        })) %>% as.data.frame()
+
+        counts_per_ct <- bind_cols(block_variants, counts_per_ct)
         write_tsv(counts_per_ct, counts_per_cell_type_file, append = TRUE, col_names = first_block)
       }
       # get per cell info
@@ -880,7 +870,7 @@ find_somatic_variants <- function(h5_in=NULL,
       block_per_cell_info <- block_summary %>%
         bind_cols(block_per_cell_info)
       
-      write_tsv(block_per_cell_info, genotype_file, append = TRUE, col_names = first_block)
+      data.table::fwrite(block_per_cell_info, genotype_file, sep = "\t", append = TRUE, col.names = first_block, quote = FALSE)
       
       if(run_cell_type_enrichment){
         
@@ -892,36 +882,18 @@ find_somatic_variants <- function(h5_in=NULL,
           
           ct_stats <- .calculate_cell_type_stats(NGTb,ct,cell_annotations,var_stats)
           
-          stats_block_ct <- block_summary %>%
-            bind_cols(ct_stats) %>%
-            # filtering
-            rowwise() %>%
-            mutate(
-              # Build the new, cell-type-specific filter labels
-              .new_filter_labels = {
-                labs <- c(
-                  "varcount_celltype"       = alt_cnt_ct  < min_varcount_celltype,
-                  "varportion_celltype"     = alt_proportion_ct  < min_varportion_celltype,
-                  "datacount_celltype"      = data_cnt_ct   < min_datacount_celltype,
-                  "varportion_in_celltype"  = alt_proportion_in_ct < min_varportion_in_celltype
-                )
-                out <- paste(names(which(labs)), collapse = ";")
-                if (out == "") "." else out
-              },
-              # Append to existing `filter` (which may be "." from your previous step)
-              filter = {
-                add <- .new_filter_labels
-                if (add == ".") {
-                  filter
-                } else if (filter == ".") {
-                  add
-                } else {
-                  paste0(filter, ";", add)
-                }
-              }
-            ) %>%
-            dplyr::select(-.new_filter_labels) %>%
-            ungroup()
+          stats_block_ct <- bind_cols(block_summary, ct_stats)
+
+          add <- .make_filter(cbind(
+            varcount_celltype      = ct_stats$alt_cnt_ct           < min_varcount_celltype,
+            varportion_celltype    = ct_stats$alt_proportion_ct    < min_varportion_celltype,
+            datacount_celltype     = ct_stats$data_cnt_ct          < min_datacount_celltype,
+            varportion_in_celltype = ct_stats$alt_proportion_in_ct < min_varportion_in_celltype
+          ))
+
+          f <- stats_block_ct$filter
+          stats_block_ct$filter <- ifelse(add == ".", f,
+                                    ifelse(f == ".", add, paste0(f, ";", add)))
           
           write_tsv(stats_block_ct, ct_file, append = TRUE, col_names = first_block)
           
@@ -969,34 +941,14 @@ find_somatic_variants <- function(h5_in=NULL,
       }
       
       
-      full_results <- full_results %>%
-        # filtering
-        rowwise() %>%
-        mutate(
-          # Build the new, cell-type-specific filter labels
-          .new_filter_labels = {
-            labs <- c(
-              "odds_ratio_cutoff"       = OR < odds_ratio_cutoff,
-              "zscore_cutoff"           = Z_score < zscore_cutoff,
-              "p_value" = padj > max_p_value
-            )
-            out <- paste(names(which(labs)), collapse = ";")
-            if (out == "") "." else out
-          },
-          # Append to existing `filter` (which may be "." from your previous step)
-          filter = {
-            add <- .new_filter_labels
-            if (add == ".") {
-              filter
-            } else if (filter == ".") {
-              add
-            } else {
-              paste0(filter, ";", add)
-            }
-          }
-        ) %>%
-        dplyr::select(-.new_filter_labels) %>%
-        ungroup()
+      add <- .make_filter(cbind(
+        odds_ratio_cutoff = full_results$OR      < odds_ratio_cutoff,
+        zscore_cutoff     = full_results$Z_score < zscore_cutoff,
+        p_value           = full_results$padj    > max_p_value
+      ))
+      f <- full_results$filter
+      full_results$filter <- ifelse(add == ".", f,
+                              ifelse(f == ".", add, paste0(f, ";", add)))
       
       
       if(celltype_sort_value=="p"){
@@ -1314,4 +1266,15 @@ find_somatic_variants <- function(h5_in=NULL,
     p = p_final
     
   )
+}
+
+.make_filter <- function(mat) {
+  out <- rep("", nrow(mat))
+  for (j in seq_len(ncol(mat))) {
+    hit <- which(mat[, j])
+    if (length(hit)) out[hit] <- paste0(out[hit], ifelse(out[hit] == "", "", ";"),
+                                        colnames(mat)[j])
+  }
+  out[out == ""] <- "."
+  out
 }
