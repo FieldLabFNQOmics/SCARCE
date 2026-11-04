@@ -22,8 +22,9 @@
 #' @param cell_filter A vector of barcodes/cell_IDs to include
 #' @param skip_vep Logical; if `TRUE`, skip VEP annotation and priority variant
 #'   detection. Disables `priority_only` filtering.
-#' @param priority_only Logical; if `TRUE`, restrict downstream outputs to variants
-#'   flagged as priority by VEP (rare protein-impacting). Ignored when `skip_vep=TRUE`.
+#' @param priority_only Logical; if `TRUE`, restrict cell-type enrichment testing and
+#'   outputs to passing variants flagged as priority by VEP (rare protein-impacting).
+#'   VEP is only run on variants passing the variant-level filters. Ignored when `skip_vep=TRUE`.
 #' @param pass_only_variants Logical; if `TRUE`, restricts downstream outputs to variants
 #'   which pass the variant-level filters to speed up processing time.
 #' @param block Integer; number of variants per processing chunk for memory efficiency.
@@ -32,7 +33,10 @@
 #'   calls failing are masked (`AF=NA`, `NGT=3`).
 #' @param min_GQ_per_call Minimum genotype quality (GQ) for a per-cell genotype to be
 #'   considered; calls failing are masked (`AF=NA`, `NGT=3`).
-#' @param min_DP_per_call Minimum depth (DP) for a per-cell genotype to be considered
+#' @param min_AF_per_call Minimum AF for a mutant call (NGT 1/2); failing calls are
+#'   masked as missing (`AF=NA`, `NGT=3`) rather than set to reference. (Default = 0)
+#' @param min_altreads_per_call Minimum alt reads (AF * DP) for a mutant call; failing
+#'   calls are masked as missing. (Default = 0)
 #'
 #' @param min_varcount_total Minimum number of mutant cells (NGT %in% 1,2) across all cells.
 #' @param min_varportion_total Minimum fraction of mutant among informative cells
@@ -63,6 +67,7 @@
 #'
 #' @param celltype_sort_value Sorting key for per-cell-type result tables; `"p"`
 #'   sorts by adjusted p-value ascending (default). `"z"` sorts by descending z-score.
+#'   "cooc" sorts by co-occurence score
 #'
 #' @param overwrite_variant_summary Logical; overwrite existing global summary files
 #'   (`*_summary.tsv`, `*_summary_pass_only.tsv`, etc.) if present.
@@ -79,6 +84,25 @@
 #' @param use_vep_file Path to existing VEP annotation file to use
 #' @param AF_in_percent Force convert AF from 0-100 scale to 0-1 scale
 #' @param p_adjust_method P adjustment method passed to stats::p.adjust. 
+
+#' @param run_cooccurrence Logical; score passing variants by how many other variants
+#'   share their carrier cells, against a shuffled null. Adds cooc_* columns to the
+#'   summary and per-cell-type files. (Default = FALSE)
+#' @param cooc_min_af,cooc_min_altreads Thresholds for a confident alt call in
+#'   co-occurrence scoring. (Defaults = 0.3, 2)
+#' @param cooc_min_dp_ref Minimum depth for a confident reference call in co-occurrence
+#'   scoring. (Default = 5)
+#' @param cooc_min_carriers Minimum confident carriers for a variant to be scored. (Default = 3)
+#' @param cooc_jaccard,cooc_overlap Two variants are partners if their carrier sets have
+#'   Jaccard >= cooc_jaccard or overlap coefficient >= cooc_overlap (allowing nested
+#'   subclones), computed over jointly covered cells. (Defaults = 0.6, 0.9)
+#' @param cooc_min_distance Variants closer than this (bp, same chromosome) are not counted
+#'   as partners, avoiding shared-read and same-amplicon artefacts. (Default = 1000)
+#' @param cooc_max_reference Maximum variants used as the comparison set; larger sets are
+#'   randomly sampled. (Default = 50000)
+#' @param cooc_seed Seed for reference sampling and the shuffled null. (Default = 1)
+#' @param max_cooc_p Optional maximum cooc_p for per-cell-type results. Variants that
+#'   could not be scored are not filtered. (Default = NULL)
 #' @export
 
 find_somatic_variants <- function(h5_in=NULL,
@@ -96,6 +120,8 @@ find_somatic_variants <- function(h5_in=NULL,
                                   # Call-Level thresholds
                                   min_DP_per_call= 10, 
                                   min_GQ_per_call= 30,
+                                  min_AF_per_call = 0.2,
+                                  min_altreads_per_call = 0,
                                   # Variant-level thresholds
                                   min_varcount_total        = 30,
                                   min_varportion_total      = 0,
@@ -127,7 +153,19 @@ find_somatic_variants <- function(h5_in=NULL,
                                   use_vep_file=NULL,
                                   AF_in_percent=NULL,
                                   cell_filter=NULL,
-                                  p_adjust_method="BY"
+                                  p_adjust_method="BY",
+                                  # Co-occurrence scoring
+                                  run_cooccurrence = FALSE,
+                                  cooc_min_af = 0.3,
+                                  cooc_min_altreads = 2,
+                                  cooc_min_dp_ref = 5,
+                                  cooc_min_carriers = 3,
+                                  cooc_jaccard = 0.6,
+                                  cooc_overlap = 0.9,
+                                  cooc_min_distance = 1000,
+                                  cooc_max_reference = 50000,
+                                  cooc_seed = 1,
+                                  max_cooc_p = NULL
                           ) {
 
   if(is.null(cell_annotations) & run_cell_type_enrichment){
@@ -142,6 +180,9 @@ find_somatic_variants <- function(h5_in=NULL,
     warning("priority_only ignored because skip_vep=TRUE")
     priority_only <- FALSE
   }
+
+  if (!is.null(max_cooc_p) && !run_cooccurrence) stop("max_cooc_p requires run_cooccurrence = TRUE")
+  if (celltype_sort_value == "cooc" && !run_cooccurrence) stop("celltype_sort_value = 'cooc' requires run_cooccurrence = TRUE")
   
   ############################################################
   # ------------------- Check Cell Types ------------------- #
@@ -150,7 +191,7 @@ find_somatic_variants <- function(h5_in=NULL,
   if(!is.null(cell_annotations)){
     all_cell_types <- sort(unique(cell_annotations))
     
-    if (cell_type != "all") {
+    if (!identical(cell_type, "all")) {
       analysis_cell_types <- intersect(all_cell_types, cell_type)
     }else{
       analysis_cell_types <- all_cell_types
@@ -207,6 +248,7 @@ find_somatic_variants <- function(h5_in=NULL,
     }
   }
   vep_file <- file.path(out_dir, paste0(file_prefix, "_vep_annotated.vcf"))
+  vep_in_file <- file.path(out_dir, paste0(file_prefix, "_vep_in.tsv"))
   
   #############################################################
   # ------------------- Get Cell Barcodes ------------------- #
@@ -233,7 +275,7 @@ find_somatic_variants <- function(h5_in=NULL,
       match <- F
       for(i in 1:nchar(barcode1)){
         start_sub <- substr(barcode1,1,i)
-        end_sub <- substr(barcode1,nchar(barcode1)-i,nchar(barcode1))
+        end_sub <- substr(barcode1,nchar(barcode1)-i+1,nchar(barcode1))
         if(start_sub==cell1){
           match <- T
           barcode_suffix <- substr(barcode1, i+1, nchar(barcode1))
@@ -243,8 +285,8 @@ find_somatic_variants <- function(h5_in=NULL,
           }
         }else if (end_sub==cell1){
           match <- T
-          barcode_prefix <- substr(barcode1,i, nchar(barcode1)-i-1)
-          barcodes <- gsub(barcode_prefix,"",barcodes)
+          barcode_prefix <- substr(barcode1, 1, nchar(barcode1)-i)
+          barcodes <- gsub(barcode_prefix,"",barcodes,fixed = TRUE)
           if (identical(sort(names(cell_annotations)),sort(barcodes))){
             message(paste0("substring match found, trimming ", barcode_prefix," prefix from barcodes"))
           }
@@ -257,6 +299,10 @@ find_somatic_variants <- function(h5_in=NULL,
         stop("no substring match found")
       }
     }
+    # put annotations in the same order as the VCF/h5 samples (cells are matched by position below)
+    if (!setequal(names(cell_annotations), barcodes)) stop("cell_annotations names don't match the VCF/h5 sample names")
+    cell_annotations <- cell_annotations[barcodes]
+
   }
   
   if(!is.null(cell_filter)){
@@ -307,7 +353,7 @@ find_somatic_variants <- function(h5_in=NULL,
     }
     
     open(tabix)
-    suppressWarnings(rm(variant_info))
+    variant_info_chunks <- list()
     repeat {
       v <- readVcf(tabix, genome = genome_version, param = param)
       if (nrow(v) == 0) break
@@ -325,22 +371,23 @@ find_somatic_variants <- function(h5_in=NULL,
       #  character(1)
       #)
       
-      if(exists("variant_info")){
-        variant_info <- variant_info %>%
-          bind_rows(data.frame(CHROM,POS,REF,ALT))
-      }else{
-        variant_info <- data.frame(CHROM,POS,REF,ALT)
-      }
+      variant_info_chunks[[length(variant_info_chunks) + 1]] <- data.frame(CHROM,POS,REF,ALT)
       
     }
     close(tabix)
     
+    variant_info <- bind_rows(variant_info_chunks)
+    rm(variant_info_chunks)
+    
     variants <- .normalise_vcf(variant_info)
+    rm(variant_info)
+
     
     
   }else if(!is.null(h5_in)){
     variant_info <- h5read(h5_in, "/assays/dna_variants/ca")[c("CHROM","POS","REF","ALT")] %>% as.data.frame()
     variants <- .normalise_vcf(variant_info)
+    rm(variant_info)
   }
   
   #######################################################################
@@ -359,97 +406,14 @@ find_somatic_variants <- function(h5_in=NULL,
   variants <- variants %>%
     filter(!filter) %>%
     dplyr::select(-filter)
-  
-  ########################################################################
-  # ------------------- Ensemble VEP + Filter Pass 2 ------------------- #
-  ########################################################################
+
+  # Add a plotting ID. If using VEP, this will get overwritten later if variant is protein-coding
+  variants <- variants %>%
+    mutate(plot_ID=variant)
   
   if(!skip_vep){
-    if(!is.null(use_vep_file)){
-      if(file.exists(use_vep_file)){
-        vep_run <- .parse_vep_vcf(use_vep_file)
-      }
-    }else if(file.exists(vep_file) & !overwrite_variant_summary){
-      message(paste0("Reading in existing VEP results from ", vep_file))
-      vep_run <- .parse_vep_vcf(vep_file)
-    }else{
-      # Generate VEP Input
-      vep_in <- variants %>%
-        mutate(allele=paste0(reference_allele,"/",alternate_allele),
-               strand="+") %>%
-        dplyr::select(chromosome, start_position, end_position, allele, strand, variant)
-      write_tsv(vep_in, file.path(out_dir,paste0(file_prefix,"_vep_in.tsv")), col_names = F)
-      
-      # Run VEP
-      message("Annotating variants using ENSEMBL-vep...")
-      
-      vep_run <- run_vep(
-        file.path(out_dir, paste0(file_prefix, "_vep_in.tsv")),
-        output = vep_file,
-        return = "data.frame",
-        args = c(
-          "--force_overwrite",
-          "--biotype","--domains",
-          "--max_af","--check_existing","--numbers","--regulatory",
-          "--sift","b","--polyphen","b", "--hgvs", "--flag_pick_allele"
-        )
-      )
-    }
-    # Wrangle VEP Output and find priority variants
-    
-    message("Retrieving VEP annotations and finding priority variants...")
-    
-    is_rare_or_unreported <- function(s, cutoff) {
-      if (is.na(s) || s == "" || grepl("^;*$", s)) return(TRUE)
-      vals <- suppressWarnings(as.numeric(unlist(strsplit(s, ";", fixed = TRUE))))
-      if (length(vals) == 0 || all(is.na(vals))) return(TRUE)
-      any(vals < cutoff, na.rm = TRUE)
-    }
-    
-    collapse_terms <- function(x) paste(x, collapse = ";")
-    
-    vep_info_cols <- vep_run %>% filter(PICK==1) %>%
-      dplyr::select(ID, SYMBOL, Gene, Feature, HGVSp, MAX_AF, Consequence, Existing_variation, BIOTYPE, SIFT, PolyPhen) %>%
-      # generate a user-friendly plot label
-      mutate(plot_ID=ifelse(HGVSp!="" & SYMBOL!="", paste0(SYMBOL,gsub(".*:p.","",HGVSp)), ID) ) %>%
-      mutate(plot_ID=ifelse(plot_ID %in% plot_ID[which(duplicated(plot_ID))], paste0(plot_ID,"(",str_extract(ID,"([^0-9]+$)", group = 1),")"), plot_ID)) %>%
-      mutate(plot_ID=ifelse(nchar(plot_ID)>30, 
-                            ifelse(str_detect(plot_ID, "\\)$"), paste0(substr(plot_ID,1,30),"...)"), paste0(substr(plot_ID,1,30),"...")),
-                            plot_ID)) %>%
-      mutate(plot_ID=make.unique(plot_ID)) %>%
-      group_by(ID,plot_ID) %>%
-      summarise(across(everything(), collapse_terms)) %>%
-      # decide on priority variants (rare nonsense/missense/frameshift)
-      rowwise() %>%
-      mutate(priority_flag = ifelse(
-        str_detect(Consequence, "missense_variant|stop_gained|stop_lost|start_lost|frameshift_variant|inframe_(deletion|insertion)|protein_altering_variant")  & 
-          is_rare_or_unreported(MAX_AF,rare_cutoff),
-        1,0
-      ))
-    
-    if(any(duplicated(vep_info_cols$ID))){
-      stop("Problem with VEP annotations: Non-unique rows in output")
-    }
-    
-    variants <- variants %>%
-      left_join(vep_info_cols, by = c("variant"="ID"))
-    
-    tmp_priority_idx <- which(variants$variant %in% vep_info_cols$ID[vep_info_cols$priority_flag == 1])
-    
-    # correctly map priority variants back to input vcf/h5
-    priority_idx <- keep_idx[tmp_priority_idx]
-    
-    message(paste0("Identified ", length(priority_idx), " priority variants"))
-    
-    if(priority_only){
-      variants <- variants %>%
-        filter(priority_flag==1)
-      is_keep <- is_keep[priority_idx]
-      keep_idx <- priority_idx
-    } 
-  }else{
-    variants <- variants %>%
-      mutate(plot_ID=variant)
+    # passing variants are appended to this file inside the loop
+    file.create(vep_in_file)
   }
   
   #################################################################
@@ -461,6 +425,8 @@ find_somatic_variants <- function(h5_in=NULL,
   # write header for cell-specific file
   writeLines("#FORMAT=AF;DP;GQ;NGT", genotype_file)
   
+  cooc_calls <- list(); cooc_info <- list(); cooc_counts <- list()
+
   if(!is.null(vcf_in)){
     
     nr <- nrow(variants)
@@ -520,6 +486,9 @@ find_somatic_variants <- function(h5_in=NULL,
       
       # get variant data for the block
       block_variants <- variants[variant_rows, , drop = FALSE]
+      # empty VEP columns, filled in after the loop for passing variants
+      if (!skip_vep) block_variants <- .add_empty_vep_cols(block_variants)
+
       
       if (ad_is_scalar) {
         ADb_alt <- geno(vcf)$AD[keep_rows,,drop=FALSE]
@@ -567,6 +536,10 @@ find_somatic_variants <- function(h5_in=NULL,
           min_quality_mean_total <- -Inf
       }
       pass_call <- (trueDPb >= min_DP_per_call) & (if (has_GQ) GQb >= min_GQ_per_call else TRUE)
+      low_af_alt <- (NGTb == 1L | NGTb == 2L) & is.finite(AFb) &
+                    (AFb < min_AF_per_call | round(AFb * trueDPb) < min_altreads_per_call)
+      low_af_alt[is.na(low_af_alt)] <- FALSE
+      pass_call <- pass_call & !low_af_alt
       AFb[!pass_call] <- NA_real_
       GQb[!pass_call] <- NA_real_
       NGTb[!pass_call] <- 3L
@@ -605,6 +578,8 @@ find_somatic_variants <- function(h5_in=NULL,
         min_allelefreq_mean_mutants = var_stats$mean_AF_mutants      < min_allelefreq_mean_mutants
       ))
 
+      if (run_cooccurrence) block_summary <- .add_empty_cooc_cols(block_summary)
+
       
       if (isTRUE(pass_only_variants)) {
         pass_idx       <- which(block_summary$filter == ".")
@@ -621,29 +596,40 @@ find_somatic_variants <- function(h5_in=NULL,
         GQb            <- GQb[pass_idx, , drop = FALSE]
         if (nrow(block_summary) == 0L) next
       }
-      
-      if(!priority_only){
-        
-        write_tsv(block_summary, summary_file, append = TRUE, col_names = first_block)
-        
-        write_tsv(block_summary %>%
-                    filter(filter==".") %>%
-                    dplyr::select(-filter), summary_pass_file, append = TRUE, col_names = first_block)
-        
-        if (isFALSE(skip_vep)) {
-          write_tsv(block_summary %>%
-                      filter(filter==".", priority_flag==1) %>%
-                      dplyr::select(-c(filter,priority_flag)), summary_pass_priority_file, append = TRUE, col_names = first_block)
+
+      if (run_cooccurrence) {
+        pr <- which(block_summary$filter == ".")
+        if (length(pr)) {
+          calls <- .cooc_calls(AFb[pr, , drop = FALSE], trueDPb[pr, , drop = FALSE],
+                               cooc_min_af, cooc_min_altreads, cooc_min_dp_ref)
+          n_alt <- rowSums(calls == as.raw(2L))
+          cooc_counts[[length(cooc_counts) + 1]] <- data.frame(variant = block_summary$variant[pr],
+                                                                cooc_n_carriers = n_alt)
+          ok <- n_alt >= cooc_min_carriers
+          if (any(ok)) {
+            cooc_calls[[length(cooc_calls) + 1]] <- calls[ok, , drop = FALSE]
+            cooc_info[[length(cooc_info) + 1]] <- block_summary[pr[ok], c("variant", "chromosome", "start_position")]
+          }
         }
-        
-      }else{
-        
-        write_tsv(block_summary, summary_file, append = TRUE, col_names = first_block)
-        write_tsv(block_summary %>%
-                    filter(filter==".") %>%
-                    dplyr::select(-filter), summary_pass_priority_file, append = TRUE, col_names = first_block)
       }
       
+      # write variant info to summary file
+
+      write_tsv(block_summary, summary_file, append = TRUE, col_names = first_block)
+      
+      write_tsv(block_summary %>%
+                  filter(filter==".") %>%
+                  dplyr::select(-filter), summary_pass_file, append = TRUE, col_names = first_block)
+      
+      # VEP input for passing variants (VEP runs once after the loop)
+      if (!skip_vep) {
+        write_tsv(block_summary %>%
+                    filter(filter==".") %>%
+                    mutate(allele=paste0(reference_allele,"/",alternate_allele),
+                           strand="+") %>%
+                    dplyr::select(chromosome, start_position, end_position, allele, strand, variant),
+                  vep_in_file, append = TRUE, col_names = FALSE)
+      }
       
       # write counts per cell type
       if(!is.null(cell_annotations)){
@@ -670,6 +656,7 @@ find_somatic_variants <- function(h5_in=NULL,
       block_per_cell_info <- as.data.frame(block_per_cell_info, check.names = FALSE)
       
       block_per_cell_info <- block_summary %>%
+        dplyr::select(-dplyr::starts_with("cooc_")) %>%
         bind_cols(block_per_cell_info)
       
       data.table::fwrite(block_per_cell_info, genotype_file, sep = "\t", append = TRUE, col.names = first_block, quote = FALSE)
@@ -723,7 +710,7 @@ find_somatic_variants <- function(h5_in=NULL,
     NGT    <- HDF5Array(h5_in, ds_NGT)[keep_idx, keep_cells, drop = FALSE]
     
     nr <- nrow(variants)
-    nc <- ncol(variants)
+    nc <- ncol(AF_raw)
     
     dimnames(AF_raw) <- dimnames(DP) <- dimnames(GQ) <- dimnames(NGT) <- list(NULL, barcodes)
     
@@ -753,6 +740,9 @@ find_somatic_variants <- function(h5_in=NULL,
       
       # get variant data for the block
       block_variants <- variants[rows, , drop = FALSE]
+      # empty VEP columns, filled in after the loop for passing variants
+      if (!skip_vep) block_variants <- .add_empty_vep_cols(block_variants)
+
       
       # materialize only this block into RAM
       AFb_raw <- as.matrix(AF_raw[rows, , drop = FALSE])# used for per-cell "AF="
@@ -769,8 +759,12 @@ find_somatic_variants <- function(h5_in=NULL,
       }
       
       # Apply per-call filters
-      
+
       pass_call <- (DPb >= min_DP_per_call) & (GQb >= min_GQ_per_call)
+      low_af_alt <- (NGTb == 1L | NGTb == 2L) & is.finite(AFb) &
+                    (AFb < min_AF_per_call | round(AFb * DPb) < min_altreads_per_call)
+      low_af_alt[is.na(low_af_alt)] <- FALSE
+      pass_call <- pass_call & !low_af_alt
       AFb[!pass_call] <- NA_real_
       GQb[!pass_call] <- NA_real_
       NGTb[!pass_call] <- 3L
@@ -806,6 +800,8 @@ find_somatic_variants <- function(h5_in=NULL,
         min_allelefreq_mean_total   = var_stats$mean_AF_total        < min_allelefreq_mean_total,
         min_allelefreq_mean_mutants = var_stats$mean_AF_mutants      < min_allelefreq_mean_mutants
       ))
+
+      if (run_cooccurrence) block_summary <- .add_empty_cooc_cols(block_summary)
       
       if (isTRUE(pass_only_variants)) {
         pass_idx       <- which(block_summary$filter == ".")
@@ -820,29 +816,40 @@ find_somatic_variants <- function(h5_in=NULL,
         AFb            <- AFb[pass_idx, , drop = FALSE]
         DPb            <- DPb[pass_idx, , drop = FALSE]
         GQb            <- GQb[pass_idx, , drop = FALSE]
-        if (nrow(block_summary) == 0L) { first_block <- FALSE; next }
+        if (nrow(block_summary) == 0L) next
       }
       
-      if(!priority_only){
-        
-        write_tsv(block_summary, summary_file, append = TRUE, col_names = first_block)
-        
-        write_tsv(block_summary %>%
-                    filter(filter==".") %>%
-                    dplyr::select(-filter), summary_pass_file, append = TRUE, col_names = first_block)
-        
-        if (isFALSE(skip_vep)) {
-          write_tsv(block_summary %>%
-                      filter(filter==".", priority_flag==1) %>%
-                      dplyr::select(-c(filter,priority_flag)), summary_pass_priority_file, append = TRUE, col_names = first_block)
+      if (run_cooccurrence) {
+        pr <- which(block_summary$filter == ".")
+        if (length(pr)) {
+          calls <- .cooc_calls(AFb[pr, , drop = FALSE], DPb[pr, , drop = FALSE],
+                               cooc_min_af, cooc_min_altreads, cooc_min_dp_ref)
+          n_alt <- rowSums(calls == as.raw(2L))
+          cooc_counts[[length(cooc_counts) + 1]] <- data.frame(variant = block_summary$variant[pr],
+                                                                cooc_n_carriers = n_alt)
+          ok <- n_alt >= cooc_min_carriers
+          if (any(ok)) {
+            cooc_calls[[length(cooc_calls) + 1]] <- calls[ok, , drop = FALSE]
+            cooc_info[[length(cooc_info) + 1]] <- block_summary[pr[ok], c("variant", "chromosome", "start_position")]
+          }
         }
-        
-      }else{
-        
-        write_tsv(block_summary, summary_file, append = TRUE, col_names = first_block)
+      }
+
+
+      write_tsv(block_summary, summary_file, append = TRUE, col_names = first_block)
+      
+      write_tsv(block_summary %>%
+                  filter(filter==".") %>%
+                  dplyr::select(-filter), summary_pass_file, append = TRUE, col_names = first_block)
+      
+      # VEP input for passing variants (VEP runs once after the loop)
+      if (!skip_vep) {
         write_tsv(block_summary %>%
                     filter(filter==".") %>%
-                    dplyr::select(-filter), summary_pass_priority_file, append = TRUE, col_names = first_block)
+                    mutate(allele=paste0(reference_allele,"/",alternate_allele),
+                           strand="+") %>%
+                    dplyr::select(chromosome, start_position, end_position, allele, strand, variant),
+                  vep_in_file, append = TRUE, col_names = FALSE)
       }
       
       # write counts per cell type
@@ -868,6 +875,7 @@ find_somatic_variants <- function(h5_in=NULL,
       block_per_cell_info <- as.data.frame(block_per_cell_info, check.names = FALSE)
       
       block_per_cell_info <- block_summary %>%
+        dplyr::select(-dplyr::starts_with("cooc_")) %>%
         bind_cols(block_per_cell_info)
       
       data.table::fwrite(block_per_cell_info, genotype_file, sep = "\t", append = TRUE, col.names = first_block, quote = FALSE)
@@ -903,8 +911,139 @@ find_somatic_variants <- function(h5_in=NULL,
       first_block <- FALSE
     }
   }
-  
-  
+
+
+  ###############################################################
+  # ----------------- Co-occurrence Scoring ------------------- #
+  ###############################################################
+
+  if (run_cooccurrence) {
+    message("Scoring variant co-occurrence...")
+    counts_df <- bind_rows(cooc_counts)
+    if (length(cooc_calls)) {
+      scores <- .cooccurrence_scores(do.call(rbind, cooc_calls), bind_rows(cooc_info),
+                                     jaccard_thresh = cooc_jaccard, overlap_thresh = cooc_overlap,
+                                     min_distance = cooc_min_distance, max_reference = cooc_max_reference,
+                                     seed = cooc_seed)
+    } else {
+      scores <- data.frame(variant = character(), cooc_partners = integer(), cooc_p = numeric())
+    }
+    cooc_annot <- counts_df %>%
+      left_join(scores, by = "variant") %>%
+      mutate(cooc_testable = as.integer(cooc_n_carriers >= cooc_min_carriers))
+    message(sum(cooc_annot$cooc_testable), "/", nrow(cooc_annot), " passing variants had enough carriers to score")
+
+    .fill_vep_cols(summary_file, cooc_annot, label = "co-occurrence")
+    .fill_vep_cols(summary_pass_file, cooc_annot, label = "co-occurrence")
+    if (run_cell_type_enrichment) {
+      for (ct in analysis_cell_types) {
+        .fill_vep_cols(file.path(out_dir, paste0(file_prefix, "_", ct, ".tsv")), cooc_annot, label = "co-occurrence")
+      }
+    }
+    rm(cooc_calls, cooc_info, cooc_counts, counts_df, scores, cooc_annot)
+    invisible(gc())
+  }
+
+
+  ###################################################################
+  # ------------------- VEP on Passing Variants ------------------- #
+  ###################################################################
+
+  if(!skip_vep && file.size(vep_in_file) == 0){
+    message("No variants passed the variant-level filters, skipping VEP")
+    skip_vep <- TRUE
+  }
+
+  if(!skip_vep){
+    if(!is.null(use_vep_file)){
+      if(file.exists(use_vep_file)){
+        vep_run <- .parse_vep_vcf(use_vep_file)
+      }
+    }else if(file.exists(vep_file) & !overwrite_variant_summary){
+      message(paste0("Reading in existing VEP results from ", vep_file))
+      vep_run <- .parse_vep_vcf(vep_file)
+    }else{
+      # Run VEP
+      message("Annotating passing variants using ENSEMBL-vep...")
+
+      vep_run <- run_vep(
+        vep_in_file,
+        output = vep_file,
+        return = "data.frame",
+        args = c(
+          "--force_overwrite",
+          "--biotype","--domains",
+          "--max_af","--check_existing","--numbers","--regulatory",
+          "--sift","b","--polyphen","b", "--hgvs", "--pick_allele",
+          "--no_stats"
+        )
+      )
+    }
+    # Wrangle VEP Output and find priority variants
+
+    message("Retrieving VEP annotations and finding priority variants...")
+
+    is_rare_or_unreported <- function(s, cutoff) {
+      if (is.na(s) || s == "" || grepl("^;*$", s)) return(TRUE)
+      vals <- suppressWarnings(as.numeric(unlist(strsplit(s, ";", fixed = TRUE))))
+      if (length(vals) == 0 || all(is.na(vals))) return(TRUE)
+      any(vals < cutoff, na.rm = TRUE)
+    }
+
+    collapse_terms <- function(x) paste(x, collapse = ";")
+
+    # --pick_allele output has one block per variant and no PICK column;
+    # VEP files made with --flag_pick_allele still need the PICK filter
+    if ("PICK" %in% names(vep_run)) vep_run <- vep_run %>% filter(PICK==1)
+
+    vep_info_cols <- vep_run %>%
+      dplyr::select(ID, SYMBOL, Gene, Feature, HGVSp, MAX_AF, Consequence, Existing_variation, BIOTYPE, SIFT, PolyPhen) %>%
+      # generate a user-friendly plot label
+      mutate(plot_ID=ifelse(HGVSp!="" & SYMBOL!="", paste0(SYMBOL,gsub(".*:p.","",HGVSp)), ID) ) %>%
+      mutate(plot_ID=ifelse(plot_ID %in% plot_ID[which(duplicated(plot_ID))], paste0(plot_ID,"(",str_extract(ID,"([^0-9]+$)", group = 1),")"), plot_ID)) %>%
+      mutate(plot_ID=ifelse(nchar(plot_ID)>30,
+                            ifelse(str_detect(plot_ID, "\\)$"), paste0(substr(plot_ID,1,30),"...)"), paste0(substr(plot_ID,1,30),"...")),
+                            plot_ID)) %>%
+      mutate(plot_ID=make.unique(plot_ID)) %>%
+      group_by(ID,plot_ID) %>%
+      summarise(across(everything(), collapse_terms)) %>%
+      # decide on priority variants (rare nonsense/missense/frameshift)
+      rowwise() %>%
+      mutate(priority_flag = ifelse(
+        str_detect(Consequence, "missense_variant|stop_gained|stop_lost|start_lost|frameshift_variant|inframe_(deletion|insertion)|protein_altering_variant")  &
+          is_rare_or_unreported(MAX_AF,rare_cutoff),
+        1,0
+      ))
+
+    if(any(duplicated(vep_info_cols$ID))){
+      stop("Problem with VEP annotations: Non-unique rows in output")
+    }
+
+    passing_ids <- data.table::fread(vep_in_file, header = FALSE, sep = "\t", colClasses = "character")[[6]]
+    message(sum(passing_ids %in% vep_info_cols$ID), "/", length(passing_ids), " passing variants were annotated by VEP")
+    message(paste0("Identified ", sum(vep_info_cols$priority_flag == 1), " priority variants"))
+
+    # write the annotations into the empty VEP columns of every file the loop wrote
+    vep_annot <- vep_info_cols %>% ungroup() %>% dplyr::rename(variant = ID)
+    .fill_vep_cols(summary_file, vep_annot)
+    .fill_vep_cols(summary_pass_file, vep_annot)
+    .fill_vep_cols(counts_per_cell_type_file, vep_annot)
+    .fill_vep_cols(genotype_file, vep_annot, na_string = "", n_skip = 1)
+    if(run_cell_type_enrichment){
+      for (ct in analysis_cell_types) {
+        .fill_vep_cols(file.path(out_dir,paste0(file_prefix,"_",ct,".tsv")), vep_annot)
+      }
+    }
+
+    # passing priority variants (previously written inside the loop)
+    pass_rows <- data.table::fread(summary_pass_file, sep = "\t", header = TRUE, colClasses = "character",
+                                   na.strings = NULL, quote = "", strip.white = FALSE, data.table = FALSE)
+    pass_rows <- pass_rows[pass_rows$priority_flag == "1", names(pass_rows) != "priority_flag", drop = FALSE]
+    data.table::fwrite(pass_rows, summary_pass_priority_file, sep = "\t", quote = FALSE, na = "NA")
+
+    rm(vep_run, vep_info_cols, vep_annot, pass_rows)
+    invisible(gc())
+  }
   
   if(run_cell_type_enrichment){
     # sorting
@@ -931,6 +1070,12 @@ find_somatic_variants <- function(h5_in=NULL,
       
       
       full_results <- fread(ct_file)
+
+      # priority_only: test and report passing priority variants only
+      if(priority_only){
+        full_results <- full_results[priority_flag %in% 1]
+      }
+
       
       tested_idx <- with(full_results, filter == "." & is.finite(p))
       
@@ -944,7 +1089,9 @@ find_somatic_variants <- function(h5_in=NULL,
       add <- .make_filter(cbind(
         odds_ratio_cutoff = full_results$OR      < odds_ratio_cutoff,
         zscore_cutoff     = full_results$Z_score < zscore_cutoff,
-        p_value           = full_results$padj    > max_p_value
+        p_value           = full_results$padj    > max_p_value,
+        cooc_support      = if (!is.null(max_cooc_p)) !is.na(full_results$cooc_p) & full_results$cooc_p > max_cooc_p
+                            else rep(FALSE, nrow(full_results))
       ))
       f <- full_results$filter
       full_results$filter <- ifelse(add == ".", f,
@@ -957,6 +1104,9 @@ find_somatic_variants <- function(h5_in=NULL,
       }else if(celltype_sort_value=="z"){
         full_results <- full_results %>%
           arrange((desc(Z_score)))
+      }else if(celltype_sort_value=="cooc"){
+        full_results <- full_results %>%
+          arrange(cooc_p, desc(OR))
       }
       
       if(!priority_only){
@@ -1000,11 +1150,10 @@ find_somatic_variants <- function(h5_in=NULL,
       complex_del = (alt_len > 0) & (ref_len > alt_len) & (substr(REF,1,1)==substr(ALT,1,1)),
       simple_snv = (ref_len == 1) & (alt_len == 1) & (REF != ALT),
       complex_snv = (ref_len == alt_len) & (ref_len > 1) & (REF != ALT)) %>%
-    rowwise() %>%
     mutate(
-      complex_snv_pos = ifelse(complex_snv, as.numeric(paste(which(str_split(ALT, pattern = "")[[1]] != str_split(REF, pattern = "")[[1]]), collapse = ",")), NA)
+      complex_snv_pos = .complex_snv_pos(REF, ALT, complex_snv)
     ) %>%
-    ungroup() %>%
+    dplyr::as_tibble() %>%
     mutate(mnv = complex_snv & is.na(complex_snv_pos),
            complex_snv = complex_snv & !is.na(complex_snv_pos)
     ) %>%
@@ -1277,4 +1426,155 @@ find_somatic_variants <- function(h5_in=NULL,
   }
   out[out == ""] <- "."
   out
+}
+
+# Empty VEP columns, in the same order as the old left_join added them
+.add_empty_vep_cols <- function(df) {
+  df %>% mutate(SYMBOL = NA_character_, Gene = NA_character_, Feature = NA_character_,
+                HGVSp = NA_character_, MAX_AF = NA_character_, Consequence = NA_character_,
+                Existing_variation = NA_character_, BIOTYPE = NA_character_,
+                SIFT = NA_character_, PolyPhen = NA_character_, priority_flag = NA_real_)
+}
+
+# Rewrite an output file in chunks, filling the VEP columns for variants found
+# in `vep_annot`. Lines for variants without an annotation are copied unchanged;
+# only annotated lines are split into columns, filled and pasted back together.
+# `na_string` should match how the file was first written ("NA" for write_tsv,
+# "" for fwrite). `n_skip` = lines before the column header (1 for the #FORMAT
+# line of the genotype file).
+.fill_vep_cols <- function(file, vep_annot, na_string = "NA", n_skip = 0, chunk_lines = 200000, label = "VEP") {
+  if (!file.exists(file)) return(invisible(NULL))
+  message("Adding ", label, " annotations to ", file)
+  tmp <- paste0(file, ".tmp")
+  con <- file(file, "r")
+  top_lines <- readLines(con, n = n_skip + 1)
+  header <- top_lines[n_skip + 1]
+  writeLines(top_lines, tmp)
+  out <- file(tmp, "a")
+  col_names <- strsplit(header, "\t", fixed = TRUE)[[1]]
+  fill_cols <- intersect(setdiff(names(vep_annot), "variant"), col_names)
+  # regex that pulls out the `variant` field of each line
+  variant_regex <- paste0("^(?:[^\t]*\t){", match("variant", col_names) - 1, "}([^\t]*).*$")
+  repeat {
+    lines <- readLines(con, n = chunk_lines)
+    if (length(lines) == 0) break
+    hit <- which(sub(variant_regex, "\\1", lines, perl = TRUE) %in% vep_annot$variant)
+    if (length(hit)) {
+      chunk <- data.table::fread(text = c(header, lines[hit]), sep = "\t", header = TRUE, colClasses = "character",
+                                 na.strings = NULL, quote = "", strip.white = FALSE, data.table = FALSE)
+      m <- match(chunk$variant, vep_annot$variant)
+      for (col in fill_cols) {
+        x <- as.character(vep_annot[[col]][m])
+        x[is.na(x)] <- na_string
+        chunk[[col]] <- x
+      }
+      lines[hit] <- do.call(paste, c(chunk, sep = "\t"))
+    }
+    writeLines(lines, out)
+  }
+  close(out)
+  close(con)
+  file.rename(tmp, file)
+}
+
+.complex_snv_pos <- function(REF, ALT, complex_snv) {
+  out <- rep(NA_real_, length(REF))
+  idx <- which(complex_snv)
+  out[idx] <- vapply(idx, function(i) {
+    suppressWarnings(as.numeric(paste(which(str_split(ALT[i], pattern = "")[[1]] != str_split(REF[i], pattern = "")[[1]]), collapse = ",")))
+  }, numeric(1))
+  out
+}
+
+# Empty co-occurrence columns, filled after the loop for passing variants
+.add_empty_cooc_cols <- function(df) {
+  df %>% mutate(cooc_n_carriers = NA_integer_, cooc_testable = NA_integer_,
+                cooc_partners = NA_integer_, cooc_p = NA_real_)
+}
+
+# Per-cell calls for co-occurrence scoring (raw to save memory):
+# 2 = confident alt, 1 = confident reference, 0 = uncertain
+.cooc_calls <- function(AF, DP, min_af, min_altreads, min_dp_ref) {
+  alt_reads <- round(AF * DP)
+  calls <- matrix(as.raw(0L), nrow(AF), ncol(AF))
+  is_ref <- is.finite(AF) & AF == 0 & is.finite(DP) & DP >= min_dp_ref
+  is_alt <- is.finite(alt_reads) & AF >= min_af & alt_reads >= min_altreads
+  calls[is_ref] <- as.raw(1L)
+  calls[is_alt] <- as.raw(2L)
+  calls
+}
+
+# Count partners for each query variant against a reference set. Overlap is
+# computed over jointly covered cells; nearby variants (and self) are excluded.
+.count_partners_cov <- function(carr, cov, query, ref, chrom, pos, jaccard_thresh,
+                                overlap_thresh, min_distance, block = NULL) {
+  if (is.null(block)) block <- max(50L, floor(5e6 / length(ref)))
+  carr_r <- carr[ref, , drop = FALSE] * 1
+  cov_r  <- cov[ref, , drop = FALSE] * 1
+  out <- integer(length(query))
+  for (s in seq(1L, length(query), by = block)) {
+    pos_q <- s:min(s + block - 1L, length(query))
+    qi <- query[pos_q]
+    cq <- carr[qi, , drop = FALSE] * 1
+    vq <- cov[qi, , drop = FALSE] * 1
+    inter  <- tcrossprod(cq, carr_r)          # alt in both
+    a_in_b <- tcrossprod(cq, cov_r)           # query carriers covered in ref variant
+    b_in_a <- tcrossprod(vq, carr_r)          # ref carriers covered in query variant
+    jac <- inter / (a_in_b + b_in_a - inter)
+    ovl <- inter / pmin(a_in_b, b_in_a)
+    partner <- inter >= 2 & (jac >= jaccard_thresh | ovl >= overlap_thresh)
+    partner[is.na(partner)] <- FALSE
+    near <- outer(chrom[qi], chrom[ref], "==") & abs(outer(pos[qi], pos[ref], "-")) < min_distance
+    partner[near | outer(qi, ref, "==")] <- FALSE
+    out[pos_q] <- rowSums(partner)
+  }
+  out
+}
+
+# Null: keep each variant's carrier count and covered cells, but place carriers
+# with probability proportional to each cell's alt rate
+.shuffle_carriers_weighted <- function(carr, cov) {
+  w <- colSums(carr) / pmax(colSums(cov), 1) + 1e-6
+  out <- carr
+  out[] <- FALSE
+  for (i in seq_len(nrow(carr))) {
+    k <- sum(carr[i, ])
+    if (k > 0) {
+      ok <- which(cov[i, ])
+      out[i, ok[sample.int(length(ok), k, prob = w[ok])]] <- TRUE
+    }
+  }
+  out
+}
+
+# Partner counts and empirical p-values against the weighted null,
+# compared within carrier-count bins
+.cooccurrence_scores <- function(calls, info, jaccard_thresh, overlap_thresh, min_distance,
+                                 max_reference, n_bins = 20, seed = NULL) {
+  if (!is.null(seed)) set.seed(seed)
+  carr <- calls == as.raw(2L)
+  cov  <- calls != as.raw(0L)
+  rm(calls)
+  n <- nrow(carr)
+  chrom <- as.integer(factor(info$chromosome))
+  pos <- info$start_position
+  ref    <- if (n > max_reference) sort(sample.int(n, max_reference)) else seq_len(n)
+  null_q <- if (n > max_reference) sort(sample.int(n, max_reference)) else seq_len(n)
+
+  obs <- .count_partners_cov(carr, cov, seq_len(n), ref, chrom, pos,
+                             jaccard_thresh, overlap_thresh, min_distance)
+  shuf <- .shuffle_carriers_weighted(carr, cov)
+  nul <- .count_partners_cov(shuf, cov, null_q, ref, chrom, pos,
+                             jaccard_thresh, overlap_thresh, min_distance)
+
+  k_bin <- pmin(rowSums(carr), n_bins)
+  cooc_p <- rep(NA_real_, n)
+  for (b in unique(k_bin)) {
+    null_b <- sort(nul[k_bin[null_q] == b])
+    if (length(null_b) == 0) next
+    i <- which(k_bin == b)
+    n_ge <- length(null_b) - findInterval(obs[i] - 0.5, null_b)
+    cooc_p[i] <- (1 + n_ge) / (1 + length(null_b))
+  }
+  data.frame(variant = info$variant, cooc_partners = obs, cooc_p = signif(cooc_p, 4))
 }
