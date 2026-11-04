@@ -43,7 +43,11 @@
 #' @param max_alt_portion_total Maximum allowed global mutant fraction
 #'   (`alt_cnt_total / data_cnt_total`) to keep (helps exclude ubiquitous/germline-like sites).
 #' @param topn_col Column used to rank variants. If NULL (default) the row order of the cell-type
-#'   results files is used. Use `"p"` (ascending) or `"OR"`/`"Z_score"` (descending).
+#'   results files is used. Use `"p"` (ascending), `"OR"`/`"Z_score"` (descending), or `"cooc"`
+#'   (ascending co-occurrence p, ties broken by OR). `"cooc"` requires `find_somatic_variants()`
+#'   to have been run with `run_cooccurrence = TRUE`.
+#' @param heatmap_anno Features used to annotate the heatmap. One of "padj" or "OR" (one strip
+#'   per cell type), optionally with "cooc" (a single co-occurrence strip), e.g. c("padj", "cooc").
 #' @param font_size_multiplyer Global multiplier for text sizes in UMAP panels;
 #'   useful when plotting many variants in grids.
 #' @param umap_reduction Which reduction to use when generating UMAP plots. Usually either
@@ -116,6 +120,7 @@ plot_variants <- function(
       cell_annotations <- Idents(seurat_obj)
     }
   }
+
   
   #########
   # Files #
@@ -124,7 +129,7 @@ plot_variants <- function(
   if(!is.null(input_files)){
     all_files <- input_files
   }else{
-    all_files <- list.files(result_dir, pattern = file_prefix)
+    all_files <- list.files(result_dir, pattern = paste0("^", stringr::str_escape(file_prefix), ".*\\.tsv$"))
   }
   
   variant_counts_file <- all_files[grep("_variant_counts_per_celltype.tsv", all_files)]
@@ -159,6 +164,16 @@ plot_variants <- function(
   cell_types <- str_extract(cell_type_files, pattern = paste0("^",file_prefix,"_(.*).*.tsv"), group = 1)
   names(cell_type_files) <- cell_types
   barcodes <- .detect_barcodes(file.path(result_dir,genotype_file))
+
+
+
+  if (!all(heatmap_anno %in% c("padj", "OR", "cooc")) || sum(heatmap_anno %in% c("padj", "OR")) > 1) {
+    stop("heatmap_anno must be 'padj' or 'OR', optionally with 'cooc'")
+  }
+  uses_cooc <- "cooc" %in% heatmap_anno || identical(topn_col, "cooc")
+  if (uses_cooc && !"cooc_p" %in% names(cell_type_cols)) {
+    stop("Co-occurrence columns not found. Re-run find_somatic_variants() with run_cooccurrence = TRUE")
+  }
   
   ########################
   # Variants of Interest #
@@ -189,22 +204,11 @@ plot_variants <- function(
     }
   
     variant_rows <- variant_rows %>%
-      # apply filters
+      # apply filters*
       filter(alt_cnt_total >= min_varcount_total) %>%
       filter(alt_proportion_total <= max_alt_portion_total)
     
-    if(is.null(topn_col)){
-      variant_rows <- variant_rows %>%
-        head(n_variants)
-    }else if(topn_col %in% c("OR","Z_score")){
-      variant_rows <- variant_rows %>%
-        arrange(desc(abs(!!sym(topn_col)))) %>%
-        head(n_variants)
-    }else if(topn_col %in% c("p")){
-      variant_rows <- variant_rows %>%
-        arrange(padj,p,abs(Z_score)) %>%
-        head(n_variants)
-    }
+    variant_rows <- .rank_variants(variant_rows, topn_col, n_variants)
     
     
     variants <- variant_rows %>% dplyr::select(variant,plot_ID) %>% unique() %>% deframe()
@@ -241,18 +245,7 @@ plot_variants <- function(
       filter(alt_cnt_total >= min_varcount_total) %>%
       filter(alt_proportion_total <= max_alt_portion_total)
     
-    if(is.null(topn_col)){
-      variant_rows <- variant_rows %>%
-        head(n_variants)
-    }else if(topn_col %in% c("OR","Z_score")){
-      variant_rows <- variant_rows %>%
-        arrange(desc(abs(!!sym(topn_col)))) %>%
-        head(n_variants)
-    }else if(topn_col %in% c("p")){
-      variant_rows <- variant_rows %>%
-        arrange(padj,p,abs(Z_score)) %>%
-        head(n_variants)
-    }
+    variant_rows <- .rank_variants(variant_rows, topn_col, n_variants)
     
     
     if(nrow(variant_rows)==0){
@@ -316,7 +309,7 @@ plot_variants <- function(
     suppressWarnings(rm(sig_anno))
     for(file in cell_type_files){
       ct <- names(cell_type_files[which(cell_type_files==file)])
-      anno <- fread(file.path(result_dir,file), select = c("plot_ID","padj","OR")) %>%
+      anno <- fread(file.path(result_dir,file), select = c("plot_ID", "padj", "OR")) %>%
         mutate(padj=ifelse(OR<1,NA,padj)) %>%
         dplyr::select(plot_ID,padj) %>%
         dplyr::filter(plot_ID %in% variants) %>%
@@ -471,30 +464,70 @@ plot_variants <- function(
     
     HM_cell_order <- as.data.frame(cell_annotations)
     colnames(HM_cell_order) <- "cell_type"
+
+    # color maps
+    af_pal   <- colorRampPalette(c("#6baed6","#EDE953","#E03512"))(101)
+    #p_colfun <- colorRamp2(c(0, 0.05, 1), c("#66a61e", "white", "#E03512"))
+    p_colfun <- colorRamp2(
+      c(0, 1, -log10(0.05), 3),
+      c("#E03512", "#EDE953", "white", "#66a61e")
+    )
+    OR_colfun <- colorRamp2(
+      c(0, 1, 10),
+      c("#E03512", "white", "#66a61e")
+    )
     
-    anno_df<-NULL
-    for(file in cell_type_files){
-      ct <- names(cell_type_files[which(cell_type_files==file)])
-      anno <- fread(file.path(result_dir,file), select = c("plot_ID",heatmap_anno)) %>%
-        dplyr::filter(plot_ID %in% variants) %>%
-        mutate(plot_ID=URLdecode(plot_ID))
-      
-      anno_vals_out <- rep(1, length(variants))
-      names(anno_vals_out) <- URLdecode(variants)
-      
-      if(nrow(anno)>0){
-        anno_vals <- deframe(anno)
-        anno_vals_out[names(anno_vals)] <- anno_vals
+    ct_anno   <- intersect(heatmap_anno, c("padj", "OR"))
+    show_cooc <- "cooc" %in% heatmap_anno
+    annos_list <- list()
+
+    if (length(ct_anno)) {
+      anno_df<-NULL
+      for(file in cell_type_files){
+        ct <- names(cell_type_files[which(cell_type_files==file)])
+        anno <- fread(file.path(result_dir,file), select = c("plot_ID",ct_anno)) %>%
+          dplyr::filter(plot_ID %in% variants) %>%
+          mutate(plot_ID=URLdecode(plot_ID))
+        
+        anno_vals_out <- rep(1, length(variants))
+        names(anno_vals_out) <- URLdecode(variants)
+        
+        if(nrow(anno)>0){
+          anno_vals <- deframe(anno)
+          anno_vals_out[names(anno_vals)] <- anno_vals
+        }
+        anno_out <- data.frame(anno_vals_out)
+        colnames(anno_out) <- ct
+        if(!is.null(anno_df)){
+          anno_df <- cbind(anno_df,anno_out)
+        }else{
+          anno_df <- anno_out
+        }
       }
-      anno_out <- data.frame(anno_vals_out)
-      colnames(anno_out) <- ct
-      if(!is.null(anno_df)){
-        anno_df <- cbind(anno_df,anno_out)
-      }else{
-        anno_df <- anno_out
-      }
+      anno_df <- anno_df[, levels(factor(HM_cell_order$cell_type, levels = unique(HM_cell_order$cell_type))), drop = FALSE]
+
+      annos_list <- setNames(lapply(colnames(anno_df), function(ct) {
+        vals <- pmax(anno_df[[ct]], 1e-6)
+        if (ct_anno == "padj") {
+          anno_simple(x = -log10(vals), col = p_colfun)
+        } else {
+          anno_simple(x = vals, col = OR_colfun)
+        }
+      }), colnames(anno_df))
     }
-    
+
+    if (show_cooc) {
+      cooc <- variant_rows %>%
+        distinct(plot_ID, cooc_p) %>%
+        mutate(plot_ID = URLdecode(plot_ID))
+      cooc_vals <- setNames(rep(NA_real_, length(variants)), URLdecode(variants))
+      cooc_vals[cooc$plot_ID] <- cooc$cooc_p
+      annos_list[["Co-occurrence"]] <- anno_simple(
+        x = -log10(pmax(cooc_vals, 1e-6)), col = p_colfun, na_col = "#BDBDBD"
+      )
+    }
+
+
     # get within-cell-type clusters
     new_order <- integer(0)
     for (ct in unique(cell_annotations)) {
@@ -525,17 +558,7 @@ plot_variants <- function(
     HM_data <- HM_data[new_order, , drop = FALSE]
     HM_cell_order <- HM_cell_order[new_order, , drop = FALSE]
     
-    # color maps
-    af_pal   <- colorRampPalette(c("#6baed6","#EDE953","#E03512"))(101)
-    #p_colfun <- colorRamp2(c(0, 0.05, 1), c("#66a61e", "white", "#E03512"))
-    p_colfun <- colorRamp2(
-      c(0, 1, -log10(0.05), 3),
-      c("#E03512", "#EDE953", "white", "#66a61e")
-    )
-    OR_colfun <- colorRamp2(
-      c(0, 1, 10),
-      c("#E03512", "white", "#66a61e")
-    )
+    
     
     # consistent cell-type colours
     cts <- unique(HM_cell_order$cell_type)
@@ -553,27 +576,12 @@ plot_variants <- function(
       show_annotation_name = FALSE
     )
     
-    # reorder padj_df columns to match top-to-bottom order of cell types
-    anno_df <- anno_df[, levels(factor(HM_cell_order$cell_type, levels = unique(HM_cell_order$cell_type))), drop = FALSE]
-    
-    # build per-cell-type strips (no legends)
-    annos_list <- setNames(lapply(colnames(anno_df), function(ct) {
-      vals <- pmax(anno_df[[ct]], 1e-6)         # avoid log10(0)
-      if(heatmap_anno=="padj"){
-        anno_simple(x=-log10(vals), col = p_colfun)
-      }else{
-        anno_simple(x=vals, col = OR_colfun)
-      }
-    }), colnames(anno_df))
-    
-    top_anno <- do.call(HeatmapAnnotation, c(
-      annos_list,
-      list(
-        annotation_name_side = "left",   
-        annotation_name_rot  = 0,         # horizontal
-        show_legend = FALSE
-      )
-    ))
+    top_anno <- if (length(annos_list)) {
+      do.call(HeatmapAnnotation, c(
+        annos_list,
+        list(annotation_name_side = "left", annotation_name_rot = 0, show_legend = FALSE)
+      ))
+    } else NULL
     
     # main heatmap
     ht <- Heatmap(as.matrix(HM_data),
@@ -590,14 +598,26 @@ plot_variants <- function(
                   left_annotation = left_anno,
                   heatmap_legend_param = list(at = c(0,.25,.5,.75,1)))
     
-    # single shared padj legend
-    p_legend <- Legend(
-      title = if(heatmap_anno=="padj") "Adjusted p-value" else "Odds Ratio",
-      col_fun = if(heatmap_anno=="padj") p_colfun else OR_colfun,
-      at = if(heatmap_anno=="padj") c(0, 1, -log10(0.05), 3) else c(0, 1, 10),
-      labels = if(heatmap_anno=="padj") c("1", "0.1", "0.05", "0.001") else  c("0", "1", "10"),
-      direction = "horizontal"
-    )
+    legend_list <- list()
+    if (length(ct_anno)) {
+      legend_list[[length(legend_list) + 1]] <- Legend(
+        title = if (ct_anno == "padj") "Adjusted p-value" else "Odds Ratio",
+        col_fun = if (ct_anno == "padj") p_colfun else OR_colfun,
+        at = if (ct_anno == "padj") c(0, 1, -log10(0.05), 3) else c(0, 1, 10),
+        labels = if (ct_anno == "padj") c("1", "0.1", "0.05", "0.001") else c("0", "1", "10"),
+        direction = "horizontal"
+      )
+    }
+    if (show_cooc) {
+      legend_list[[length(legend_list) + 1]] <- Legend(
+        title = "Co-occurrence p", col_fun = p_colfun,
+        at = c(0, 1, -log10(0.05), 3), labels = c("1", "0.1", "0.05", "0.001"),
+        direction = "horizontal"
+      )
+      legend_list[[length(legend_list) + 1]] <- Legend(
+        labels = "Not testable", legend_gp = gpar(fill = "#BDBDBD"), title = ""
+      )
+    }
     
     plot_width <- 200*length(variants)+200
     
@@ -608,7 +628,7 @@ plot_variants <- function(
     HM <- draw(ht,
          heatmap_legend_side = "right",
          annotation_legend_side = "top",
-         annotation_legend_list = list(p_legend))
+         annotation_legend_list = legend_list)
     dev.off()
     
     return_plot_list[["HM_data"]] <- HM_data
@@ -1069,4 +1089,24 @@ plot_variants <- function(
   split_node(all_cells, all_vars, parent_uid="All cells", parent_label="All cells", is_root=TRUE)
   
   list(nodes = nodes, links = do.call(rbind, links))
+}
+
+# Rank selected variant rows and keep the top n
+.rank_variants <- function(variant_rows, topn_col, n_variants) {
+  if (is.null(topn_col)) {
+    variant_rows %>% head(n_variants)
+  } else if (topn_col %in% c("OR", "Z_score")) {
+    variant_rows %>% arrange(desc(abs(!!sym(topn_col)))) %>% head(n_variants)
+  } else if (topn_col == "p") {
+    variant_rows %>% arrange(padj, p, abs(Z_score)) %>% head(n_variants)
+  } else if (topn_col == "cooc") {
+    # cooc_p is the same for a variant in every cell-type file, so keep one row per
+    # variant before taking the top n; unscored variants (NA) sort last
+    variant_rows %>%
+      arrange(cooc_p, desc(OR)) %>%
+      distinct(variant, .keep_all = TRUE) %>%
+      head(n_variants)
+  } else {
+    stop("topn_col must be NULL, 'p', 'OR', 'Z_score' or 'cooc'")
+  }
 }
