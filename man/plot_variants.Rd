@@ -97,7 +97,9 @@ cells) required for a variant to be plotted.}
 (\code{alt_cnt_total / data_cnt_total}) to keep (helps exclude ubiquitous/germline-like sites).}
 
 \item{topn_col}{Column used to rank variants. If NULL (default) the row order of the cell-type
-results files is used. Use \code{"p"} (ascending) or \code{"OR"}/\code{"Z_score"} (descending).}
+results files is used. Use \code{"p"} (ascending), \code{"OR"}/\code{"Z_score"} (descending), or \code{"cooc"}
+(ascending co-occurrence p, ties broken by OR). \code{"cooc"} requires \code{find_somatic_variants()}
+to have been run with \code{run_cooccurrence = TRUE}.}
 
 \item{font_size_multiplyer}{Global multiplier for text sizes in UMAP panels;
 useful when plotting many variants in grids.}

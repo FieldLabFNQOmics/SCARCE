@@ -19,6 +19,8 @@ find_somatic_variants(
   block = 1000,
   min_DP_per_call = 10,
   min_GQ_per_call = 30,
+  min_AF_per_call = 0.2,
+  min_altreads_per_call = 0,
   min_varcount_total = 30,
   min_varportion_total = 0,
   max_varportion_total = 0.7,
@@ -45,7 +47,18 @@ find_somatic_variants(
   use_vep_file = NULL,
   AF_in_percent = NULL,
   cell_filter = NULL,
-  p_adjust_method = "BY"
+  p_adjust_method = "BY",
+  run_cooccurrence = FALSE,
+  cooc_min_af = 0.3,
+  cooc_min_altreads = 2,
+  cooc_min_dp_ref = 5,
+  cooc_min_carriers = 3,
+  cooc_jaccard = 0.6,
+  cooc_overlap = 0.9,
+  cooc_min_distance = 1000,
+  cooc_max_reference = 50000,
+  cooc_seed = 1,
+  max_cooc_p = NULL
 )
 }
 \arguments{
@@ -74,18 +87,26 @@ prefix/suffix is auto-trimmed if needed.}
 \item{skip_vep}{Logical; if \code{TRUE}, skip VEP annotation and priority variant
 detection. Disables \code{priority_only} filtering.}
 
-\item{priority_only}{Logical; if \code{TRUE}, restrict downstream outputs to variants
-flagged as priority by VEP (rare protein-impacting). Ignored when \code{skip_vep=TRUE}.}
+\item{priority_only}{Logical; if \code{TRUE}, restrict cell-type enrichment testing and
+outputs to passing variants flagged as priority by VEP (rare protein-impacting).
+VEP is only run on variants passing the variant-level filters. Ignored when \code{skip_vep=TRUE}.}
 
 \item{pass_only_variants}{Logical; if \code{TRUE}, restricts downstream outputs to variants
 which pass the variant-level filters to speed up processing time.}
 
 \item{block}{Integer; number of variants per processing chunk for memory efficiency.}
 
-\item{min_DP_per_call}{Minimum depth (DP) for a per-cell genotype to be considered}
+\item{min_DP_per_call}{Minimum depth (DP) for a per-cell genotype to be considered;
+calls failing are masked (\code{AF=NA}, \code{NGT=3}).}
 
 \item{min_GQ_per_call}{Minimum genotype quality (GQ) for a per-cell genotype to be
 considered; calls failing are masked (\code{AF=NA}, \code{NGT=3}).}
+
+\item{min_AF_per_call}{Minimum AF for a mutant call (NGT 1/2); failing calls are
+masked as missing (\code{AF=NA}, \code{NGT=3}) rather than set to reference. (Default = 0)}
+
+\item{min_altreads_per_call}{Minimum alt reads (AF * DP) for a mutant call; failing
+calls are masked as missing. (Default = 0)}
 
 \item{min_varcount_total}{Minimum number of mutant cells (NGT \%in\% 1,2) across all cells.}
 
@@ -128,7 +149,8 @@ to disable).}
 \item{zscore_cutoff}{Minimum Wald Z-score threshold for enrichment (set ≤0 to disable).}
 
 \item{celltype_sort_value}{Sorting key for per-cell-type result tables; \code{"p"}
-sorts by adjusted p-value ascending (default). \code{"z"} sorts by descending z-score.}
+sorts by adjusted p-value ascending (default). \code{"z"} sorts by descending z-score.
+"cooc" sorts by co-occurence score}
 
 \item{overwrite_variant_summary}{Logical; overwrite existing global summary files
 (\verb{*_summary.tsv}, \verb{*_summary_pass_only.tsv}, etc.) if present.}
@@ -153,6 +175,33 @@ operations here are chunked; heavy parallelism occurs upstream/downstream.)}
 \item{cell_filter}{A vector of barcodes/cell_IDs to include}
 
 \item{p_adjust_method}{P adjustment method passed to stats::p.adjust.}
+
+\item{run_cooccurrence}{Logical; score passing variants by how many other variants
+share their carrier cells, against a shuffled null. Adds cooc_* columns to the
+summary and per-cell-type files. (Default = FALSE)}
+
+\item{cooc_min_af, cooc_min_altreads}{Thresholds for a confident alt call in
+co-occurrence scoring. (Defaults = 0.3, 2)}
+
+\item{cooc_min_dp_ref}{Minimum depth for a confident reference call in co-occurrence
+scoring. (Default = 5)}
+
+\item{cooc_min_carriers}{Minimum confident carriers for a variant to be scored. (Default = 3)}
+
+\item{cooc_jaccard, cooc_overlap}{Two variants are partners if their carrier sets have
+Jaccard >= cooc_jaccard or overlap coefficient >= cooc_overlap (allowing nested
+subclones), computed over jointly covered cells. (Defaults = 0.6, 0.9)}
+
+\item{cooc_min_distance}{Variants closer than this (bp, same chromosome) are not counted
+as partners, avoiding shared-read and same-amplicon artefacts. (Default = 1000)}
+
+\item{cooc_max_reference}{Maximum variants used as the comparison set; larger sets are
+randomly sampled. (Default = 50000)}
+
+\item{cooc_seed}{Seed for reference sampling and the shuffled null. (Default = 1)}
+
+\item{max_cooc_p}{Optional maximum cooc_p for per-cell-type results. Variants that
+could not be scored are not filtered. (Default = NULL)}
 }
 \description{
 Find variants enriched in one or more annotated cell types from a Tapestri
