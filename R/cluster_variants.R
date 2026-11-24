@@ -56,7 +56,8 @@
 #'                         are skipped (Default = 3)
 #' @param n_clusters hclust mode. Fix the number of clusters instead of choosing by silhouette (Default = NULL)
 #' @param n_boot hclust mode. Number of bootstrap replicates (resampling variants) used to
-#'   estimate support for each branch of the dendrogram. 0 disables it (Default = 0)
+#'   estimate support for each dendrogram branch and the stability of each final cluster.
+#'   0 disables it (Default = 0)
 #' @param summary_af_prefilter WGS mode. Before sampling candidates, drop variants whose
 #'                             median_AF_mutants in the summary file is below min_alt_af (Default = TRUE)
 #' @return Seurat object. In hclust mode, @misc holds variant_hclust and variant_silhouette,
@@ -433,15 +434,6 @@ cluster_variants <- function(
 
     hc <- hclust(Dh, method = "ward.D2")
 
-    boot_support <- NULL
-    if (n_boot > 0) {
-      message("Bootstrapping dendrogram (", n_boot, " replicates)...")
-      if (!is.null(clustering_seed)) set.seed(clustering_seed)
-      boot_support <- .bootstrap_clades(hc, boot_X[, inf_cells, drop = FALSE], boot_dist, n_boot)
-      seurat_obj@misc$variant_bootstrap <- boot_support
-    }
-
-
     ks <- 2:min(max_k, length(inf_cells) - 1L)
     sil <- sapply(ks, function(k) {
       cl <- cutree(hc, k)
@@ -456,6 +448,22 @@ cluster_variants <- function(
     best_k <- if (!is.null(n_clusters)) n_clusters else ks[which.max(sil)]
     clusters <- setNames(rep(0L, attr(D, "Size")), attr(D, "Labels"))
     clusters[inf_cells] <- cutree(hc, best_k)
+
+    boot_support <- NULL
+    stability <- NULL
+    if (n_boot > 0) {
+      message("Bootstrapping dendrogram (", n_boot, " replicates)...")
+      if (!is.null(clustering_seed)) set.seed(clustering_seed)
+      boot <- .bootstrap_tree(hc, cutree(hc, best_k), boot_X[, inf_cells, drop = FALSE],
+                              boot_dist, n_boot, best_k)
+      boot_support <- boot$clades
+      stability <- boot$stability
+      seurat_obj@misc$variant_bootstrap <- boot_support
+      seurat_obj@misc$variant_stability <- stability
+      message("Cluster stability (mean Jaccard): ",
+              paste0("C", stability$cluster, "=", stability$mean_jaccard, collapse = ", "))
+    }
+
     message("Best k = ", best_k, " (mean silhouette ", round(max(sil, na.rm = TRUE), 3), ")")
 
     plot(hc, main = paste0(sample_ID, " variant clustering"), xlab = "", sub = "")
@@ -467,9 +475,12 @@ cluster_variants <- function(
         plot(hc, main = paste0(sample_ID, " variant clustering"), xlab = "", sub = "")
         rect.hclust(hc, k = best_k)
         if (!is.null(boot_support)) {
-          text(.node_x(hc), hc$height, labels = boot_support$support,
+          lab <- boot_support$support
+          lab[length(lab)] <- ""   # root is always 100%, so leave it unlabelled
+          text(.node_x(hc), hc$height, labels = lab,
               pos = 3, offset = 0.2, cex = 0.6, col = "#C0392B")
         }
+        .label_clusters(hc, cutree(hc, best_k), stability)
       }
       draw_dend()
       if (!is.null(plot_directory)) {
@@ -606,21 +617,37 @@ cluster_variants <- function(
   vapply(members, paste, character(1), collapse = "|")
 }
 
-# Bootstrap support: resample variants (rows) with replacement, rebuild the tree,
-# and record how often each original clade reappears exactly
-.bootstrap_clades <- function(hc, X, dist_fun, n_boot, method = "ward.D2") {
+# One bootstrap loop for both measures: branch (clade) support for the original tree,
+# and each final cluster's best Jaccard match when bootstrap trees are cut at the same k
+.bootstrap_tree <- function(hc, cl, X, dist_fun, n_boot, k, method = "ward.D2") {
   ref <- .clades(hc)
   hits <- numeric(length(ref))
+  ids <- sort(unique(cl))
+  jac <- matrix(NA_real_, n_boot, length(ids))
   for (b in seq_len(n_boot)) {
     Xb <- X[sample.int(nrow(X), replace = TRUE), , drop = FALSE]
     hb <- hclust(dist_fun(Xb), method = method)
     hits <- hits + (ref %in% .clades(hb))
+    clb <- cutree(hb, k)[names(cl)]
+    for (j in seq_along(ids)) {
+      a <- names(cl)[cl == ids[j]]
+      jac[b, j] <- max(vapply(unique(clb), function(m) {
+        bm <- names(clb)[clb == m]
+        length(intersect(a, bm)) / length(union(a, bm))
+      }, numeric(1)))
+    }
   }
-  data.frame(merge = seq_along(ref),
-             height = hc$height,
-             n_cells = lengths(strsplit(ref, "|", fixed = TRUE)),
-             support = round(100 * hits / n_boot),
-             clade = ref)
+  list(
+    clades = data.frame(merge = seq_along(ref),
+                        height = hc$height,
+                        n_cells = lengths(strsplit(ref, "|", fixed = TRUE)),
+                        support = round(100 * hits / n_boot),
+                        clade = ref),
+    stability = data.frame(cluster = ids,
+                           n_cells = as.vector(table(cl)[as.character(ids)]),
+                           mean_jaccard = round(colMeans(jac), 2),
+                           recovered = round(colMeans(jac > 0.5), 2))
+  )
 }
 
 # x position of each merge in plot.hclust (midpoint of its two children)
@@ -633,4 +660,15 @@ cluster_variants <- function(
     x[i] <- mean(xs)
   }
   x
+}
+
+# Label each cluster below its box on an hclust plot, optionally with its stability
+.label_clusters <- function(hc, cl, stability = NULL, prefix = "C", col = "#C0392B", cex = 0.8) {
+  pos <- match(names(cl), hc$labels[hc$order])
+  for (k in unique(cl)) {
+    lab <- paste0(prefix, k)
+    if (!is.null(stability)) lab <- paste0(lab, "\nJ ", stability$mean_jaccard[stability$cluster == k])
+    mtext(lab, side = 1, line = 0.3, padj = 1, at = mean(range(pos[cl == k])),
+          col = col, cex = cex, font = 2)
+  }
 }
