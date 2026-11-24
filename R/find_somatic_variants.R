@@ -371,6 +371,8 @@ find_somatic_variants <- function(h5_in=NULL,
       #  character(1)
       #)
       
+      ALT[is.na(ALT) | ALT == ""] <- "*"
+
       variant_info_chunks[[length(variant_info_chunks) + 1]] <- data.frame(CHROM,POS,REF,ALT)
       
     }
@@ -1159,7 +1161,7 @@ find_somatic_variants <- function(h5_in=NULL,
     ) %>%
     mutate(
       # skip ambiguous calls
-      skip = str_detect(ALT, stringr::fixed("*")) | str_detect(REF, stringr::fixed("*")) | (!simple_ins&!complex_ins&!complex_del&!simple_snv&!complex_snv&!mnv),
+      skip = str_detect(ALT, stringr::fixed("*")) | str_detect(REF, stringr::fixed("*")) | (!simple_ins&!simple_del&!complex_ins&!complex_del&!simple_snv&!complex_snv&!mnv),
       # handling positions
       START = case_when(
         simple_ins ~ POS + 1,
